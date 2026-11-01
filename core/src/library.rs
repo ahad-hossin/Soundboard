@@ -1,6 +1,6 @@
 //! Files on disk: `<root>/sounds/*` and `<root>/images/<sound id>.<ext>`.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -78,8 +78,13 @@ impl Library {
             return Err(LibraryError::UnsupportedExtension(display));
         }
         decode_file(source).map_err(|_| LibraryError::Undecodable(display.clone()))?;
-        let dest = unique_path(&self.sounds_dir(), &display);
-        fs::copy(source, &dest)?;
+        let (dest, mut out) = claim_unique(&self.sounds_dir(), &display)?;
+        let copied = File::open(source).and_then(|mut input| io::copy(&mut input, &mut out));
+        drop(out);
+        if let Err(e) = copied {
+            let _ = fs::remove_file(&dest);
+            return Err(e.into());
+        }
         let name = source.file_stem().and_then(|s| s.to_str()).unwrap_or("Sound").to_string();
         Ok(Sound {
             id: uuid::Uuid::new_v4().to_string(),
@@ -122,19 +127,23 @@ impl Library {
     }
 }
 
-/// `dir/file.ext`, or `dir/file (2).ext`, `dir/file (3).ext`, ... whichever is free.
-pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
-    let candidate = dir.join(file_name);
-    if !candidate.exists() {
-        return candidate;
-    }
+/// Atomically creates the first free name of `dir/file.ext`, `dir/file (2).ext`,
+/// `dir/file (3).ext`, ... with `create_new`, so concurrent imports never share a file.
+fn claim_unique(dir: &Path, file_name: &str) -> io::Result<(PathBuf, File)> {
     let p = Path::new(file_name);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
     let ext = p.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
-    (2u32..)
-        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|c| !c.exists())
-        .expect("some suffix is free")
+    let candidates =
+        std::iter::once(file_name.to_string()).chain((2u32..).map(|n| format!("{stem} ({n}){ext}")));
+    for name in candidates {
+        let candidate = dir.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(f) => return Ok((candidate, f)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("some suffix is free")
 }
 
 #[cfg(test)]
@@ -242,11 +251,31 @@ mod tests {
     }
 
     #[test]
-    fn unique_path_counts_up() {
+    fn claim_unique_counts_up_and_creates_the_file() {
         let dir = tempdir().unwrap();
-        assert_eq!(unique_path(dir.path(), "a.mp3"), dir.path().join("a.mp3"));
-        std::fs::write(dir.path().join("a.mp3"), "").unwrap();
+        let (p, _f) = claim_unique(dir.path(), "a.mp3").unwrap();
+        assert_eq!(p, dir.path().join("a.mp3"));
+        assert!(p.exists(), "claim creates the file");
         std::fs::write(dir.path().join("a (2).mp3"), "").unwrap();
-        assert_eq!(unique_path(dir.path(), "a.mp3"), dir.path().join("a (3).mp3"));
+        let (p3, _f) = claim_unique(dir.path(), "a.mp3").unwrap();
+        assert_eq!(p3, dir.path().join("a (3).mp3"));
+    }
+
+    #[test]
+    fn import_skips_a_precreated_suffix() {
+        let (_d, lib, src) = setup();
+        let p = src.join("clip.wav");
+        write_test_wav(&p, 100);
+        let a = lib.import_sound(&p).unwrap();
+        std::fs::write(lib.sounds_dir().join("clip (2).wav"), "taken").unwrap();
+        let b = lib.import_sound(&p).unwrap();
+        assert_eq!(a.file, "clip.wav");
+        assert_eq!(b.file, "clip (3).wav");
+        assert_eq!(std::fs::read(lib.sounds_dir().join("clip (2).wav")).unwrap(), b"taken", "not overwritten");
+        assert_eq!(
+            std::fs::read(lib.sound_path(&b)).unwrap(),
+            std::fs::read(&p).unwrap(),
+            "copied content is intact"
+        );
     }
 }
