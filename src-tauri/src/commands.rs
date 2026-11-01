@@ -8,7 +8,7 @@ use soundboard_core::library::Library;
 use soundboard_core::remote::auth;
 use tauri::{AppHandle, State};
 
-use crate::state::{emit_state, emit_toast, lan_addresses, lock, App, Ctx, UiState};
+use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_warm, App, Ctx, UiState};
 use crate::{hotkeys_glue, remote_glue};
 
 /// Lock, mutate, unlock. The caller emits state afterwards.
@@ -38,9 +38,14 @@ pub fn get_state(ctx: State<'_, Ctx>) -> UiState {
     state
 }
 
+/// Async so the first play (decode, device open) never blocks the main thread; the lock
+/// is taken only inside the blocking task.
 #[tauri::command]
-pub fn play(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
-    let toasts = mutate(&ctx, |a| a.play(&id))?;
+pub async fn play(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let shared = ctx.shared.clone();
+    let toasts = tauri::async_runtime::spawn_blocking(move || lock(&shared).play(&id))
+        .await
+        .map_err(|e| format!("Playing the sound failed: {e}"))??;
     for t in toasts {
         emit_toast(&app, &t.level, t.message);
     }
@@ -102,10 +107,14 @@ pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>)
     .await
     .map_err(|e| format!("Importing sounds failed: {e}"))?;
     if !imported.is_empty() {
-        let mut a = lock(&ctx.shared);
-        a.config.sounds.extend(imported);
-        a.mark_dirty();
-        a.refresh_files();
+        let ids: Vec<String> = imported.iter().map(|s| s.id.clone()).collect();
+        {
+            let mut a = lock(&ctx.shared);
+            a.config.sounds.extend(imported);
+            a.mark_dirty();
+            a.refresh_files();
+        }
+        spawn_warm(ctx.shared.clone(), Some(ids));
     }
     emit_state(&app, &ctx);
     Ok(rejected)

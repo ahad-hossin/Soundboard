@@ -27,6 +27,17 @@ impl Outputs {
     }
 }
 
+/// Result of `Engine::warm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Warm {
+    /// Decoded and added to the cache.
+    Cached,
+    /// Already in the cache; nothing decoded.
+    AlreadyCached,
+    /// The cache is full; warming never evicts, so the buffer was dropped.
+    NoRoom,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayOutcome {
     pub instance: u64,
@@ -129,6 +140,19 @@ impl<B: AudioBackend> Engine<B> {
             }
         };
         self.play_buffer(sound_id, sound_volume, &buffer)
+    }
+
+    /// Decodes `path` into the cache ahead of the first play, without playing anything.
+    pub fn warm(&mut self, sound_id: &str, path: &Path) -> Result<Warm, AudioError> {
+        if self.cache.contains(sound_id) {
+            return Ok(Warm::AlreadyCached);
+        }
+        let b = decode_file(path)?;
+        if !self.cache.is_empty() && !self.cache.has_room_for(b.byte_len()) {
+            return Ok(Warm::NoRoom);
+        }
+        self.cache.insert(sound_id, b);
+        Ok(Warm::Cached)
     }
 
     pub fn play_buffer(&mut self, sound_id: &str, sound_volume: f32, buffer: &DecodedBuffer) -> Result<PlayOutcome, AudioError> {
@@ -403,6 +427,33 @@ mod tests {
         assert_eq!(e.cached(), 1);
         e.invalidate("a");
         assert_eq!(e.cached(), 0);
+    }
+
+    #[test]
+    fn warm_decodes_into_cache_without_playing() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 500);
+        let mut e = engine(both(), 1.0);
+        assert_eq!(e.warm("a", &p).unwrap(), Warm::Cached);
+        assert_eq!(e.cached(), 1);
+        assert_eq!(e.warm("a", &p).unwrap(), Warm::AlreadyCached);
+        assert!(e.backend().calls().is_empty(), "no Play call");
+        e.play_file("a", 1.0, &p).unwrap();
+        assert_eq!(e.cached(), 1);
+    }
+
+    #[test]
+    fn warm_never_evicts() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 500);
+        // Room for exactly one decoded clip.
+        let bytes = decode_file(&p).unwrap().byte_len();
+        let mut e = Engine::new(FakeBackend::new(&["Speakers"]), both(), 1.0, bytes);
+        assert_eq!(e.warm("a", &p).unwrap(), Warm::Cached);
+        assert_eq!(e.warm("b", &p).unwrap(), Warm::NoRoom);
+        assert_eq!(e.cached(), 1);
     }
 
     #[test]

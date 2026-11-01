@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rodio::buffer::SamplesBuffer;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
 
@@ -17,6 +17,55 @@ fn needs_revalidation(last: Option<Instant>, now: Instant) -> bool {
     match last {
         None => true,
         Some(t) => now.saturating_duration_since(t) > REVALIDATE_AFTER,
+    }
+}
+
+/// Zero-copy rodio source over a cached decoded buffer: every sink shares the same `Arc`.
+struct SharedSource {
+    samples: Arc<Vec<f32>>,
+    pos: usize,
+    channels: u16,
+    sample_rate: u32,
+}
+
+impl SharedSource {
+    fn new(buffer: &DecodedBuffer) -> Self {
+        Self { samples: Arc::clone(&buffer.samples), pos: 0, channels: buffer.channels, sample_rate: buffer.sample_rate }
+    }
+}
+
+impl Iterator for SharedSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let s = self.samples.get(self.pos).copied()?;
+        self.pos += 1;
+        Some(s)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = self.samples.len().saturating_sub(self.pos);
+        (left, Some(left))
+    }
+}
+
+impl Source for SharedSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        let frames = self.samples.len() as u64 / u64::from(self.channels.max(1));
+        let rate = u64::from(self.sample_rate.max(1));
+        Some(Duration::from_secs(frames / rate) + Duration::from_nanos((frames % rate) * 1_000_000_000 / rate))
     }
 }
 
@@ -233,7 +282,7 @@ impl AudioThread {
             }
         };
         sink.set_volume(gain);
-        sink.append(SamplesBuffer::new(buffer.channels, buffer.sample_rate, (*buffer.samples).clone()));
+        sink.append(SharedSource::new(buffer));
         let h = SinkHandle(self.next);
         self.next += 1;
         self.sinks.insert(h, sink);
@@ -263,6 +312,21 @@ mod tests {
         assert!(!b.is_finished(h));
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(b.is_finished(h));
+    }
+
+    #[test]
+    fn shared_source_yields_the_buffer_without_copying() {
+        let buffer = DecodedBuffer::new(2, 4, vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8, 0.9, -1.0]);
+        let src = SharedSource::new(&buffer);
+        assert!(Arc::ptr_eq(&src.samples, &buffer.samples), "shares the cached Arc");
+        assert_eq!(src.channels(), 2);
+        assert_eq!(src.sample_rate(), 4);
+        assert_eq!(src.current_frame_len(), None);
+        // 10 samples / 2 channels = 5 frames at 4 Hz = 1.25 s
+        assert_eq!(src.total_duration(), Some(Duration::from_millis(1250)));
+        assert_eq!(src.size_hint(), (10, Some(10)));
+        let out: Vec<f32> = src.collect();
+        assert_eq!(out, *buffer.samples);
     }
 
     #[test]

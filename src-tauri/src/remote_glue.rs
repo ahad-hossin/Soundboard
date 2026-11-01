@@ -6,7 +6,7 @@ use soundboard_core::remote::protocol::ServerMsg;
 use soundboard_core::remote::{self, RemoteHandler};
 use tauri::{AppHandle, Manager};
 
-use crate::state::{emit_state, emit_toast, lan_addresses, lock, Ctx};
+use crate::state::{emit_state, emit_toast, lan_addresses, lock, play_and_report, Ctx};
 
 struct Handler {
     app: AppHandle,
@@ -18,17 +18,9 @@ impl RemoteHandler for Handler {
     }
 
     fn play(&self, id: &str) {
-        let ctx = self.app.state::<Ctx>();
-        let result = lock(&ctx.shared).play(id);
-        match result {
-            Ok(toasts) => {
-                for t in toasts {
-                    emit_toast(&self.app, &t.level, t.message);
-                }
-            }
-            Err(e) => emit_toast(&self.app, "error", e),
-        }
-        emit_state(&self.app, &ctx);
+        // Called from the server's async task; playing can block, so hand it off.
+        let (app, id) = (self.app.clone(), id.to_string());
+        tauri::async_runtime::spawn_blocking(move || play_and_report(&app, &id));
     }
 
     fn stop_all(&self) {

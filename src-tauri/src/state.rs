@@ -4,12 +4,12 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
-use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
+use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend, Warm};
 use soundboard_core::config::{self, Config};
 use soundboard_core::library::Library;
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const CACHE_BYTES: usize = 200 * 1024 * 1024;
 
@@ -242,6 +242,41 @@ pub fn lan_addresses() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Plays a sound for a hotkey or phone press and reports the outcome as toasts.
+/// Blocking (first play may decode, opening a device is slow): run it in `spawn_blocking`.
+pub fn play_and_report(app: &AppHandle, id: &str) {
+    let ctx = app.state::<Ctx>();
+    let result = lock(&ctx.shared).play(id);
+    match result {
+        Ok(toasts) => {
+            for t in toasts {
+                emit_toast(app, &t.level, t.message);
+            }
+        }
+        Err(e) => emit_toast(app, "error", e),
+    }
+    emit_state(app, &ctx);
+}
+
+/// Decodes sounds into the engine cache in the background so the first play is instant.
+/// Takes the lock once per sound. `None` warms every sound in config order.
+pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ids = ids.unwrap_or_else(|| lock(&shared).config.sounds.iter().map(|s| s.id.clone()).collect());
+        for id in ids {
+            let mut a = lock(&shared);
+            let Some(path) = a.config.sound(&id).map(|s| a.library.sound_path(s)) else {
+                continue;
+            };
+            match a.engine.warm(&id, &path) {
+                Ok(Warm::NoRoom) => break,
+                Ok(_) => {}
+                Err(e) => log::debug!("warming {id} failed: {e}"),
+            }
+        }
+    });
 }
 
 /// Pushes current state to the desktop UI and every phone. Never call while holding the App lock.

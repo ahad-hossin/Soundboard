@@ -43,6 +43,15 @@ impl BufferCache {
         }
     }
 
+    pub fn contains(&self, id: &str) -> bool {
+        self.entries.contains_key(id)
+    }
+
+    /// True when `bytes` more would stay within the cap without evicting anything.
+    pub fn has_room_for(&self, bytes: usize) -> bool {
+        self.total + bytes <= self.max_bytes
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -108,6 +117,17 @@ mod tests {
         c.insert("big", buf(100));
         assert!(c.get("big").is_some());
         assert_eq!(c.len(), 1);
+    }
+
+    #[test]
+    fn contains_and_room() {
+        let mut c = BufferCache::new(16);
+        assert!(c.has_room_for(16));
+        c.insert("a", buf(2));
+        assert!(c.contains("a"));
+        assert!(!c.contains("b"));
+        assert!(c.has_room_for(8));
+        assert!(!c.has_room_for(9));
     }
 
     #[test]

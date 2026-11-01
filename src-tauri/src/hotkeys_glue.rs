@@ -3,7 +3,7 @@ use std::str::FromStr;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::state::{emit_state, emit_toast, lock, Ctx};
+use crate::state::{emit_state, lock, play_and_report, Ctx};
 
 #[derive(Clone)]
 enum Action {
@@ -40,22 +40,18 @@ pub fn register_all(app: &AppHandle) -> Vec<String> {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            let ctx = app.state::<Ctx>();
             match &action {
-                Action::StopAll => lock(&ctx.shared).engine.stop_all(),
+                Action::StopAll => {
+                    let ctx = app.state::<Ctx>();
+                    lock(&ctx.shared).engine.stop_all();
+                    emit_state(app, &ctx);
+                }
                 Action::Play(id) => {
-                    let result = lock(&ctx.shared).play(id);
-                    match result {
-                        Ok(toasts) => {
-                            for t in toasts {
-                                emit_toast(app, &t.level, t.message);
-                            }
-                        }
-                        Err(e) => emit_toast(app, "error", e),
-                    }
+                    // This callback runs on the main thread; playing can block, so hand it off.
+                    let (app, id) = (app.clone(), id.clone());
+                    tauri::async_runtime::spawn_blocking(move || play_and_report(&app, &id));
                 }
             }
-            emit_state(app, &ctx);
         });
         if let Err(e) = result {
             errors.push(format!("Hotkey {accel} is taken by another program ({e})"));

@@ -44,7 +44,8 @@ pub fn run() {
             let mut app_state = App::new(cfg, engine, library, available_devices);
             app_state.startup_notices = notices;
             let shared: Shared = Arc::new(Mutex::new(app_state));
-            app.manage(Ctx { shared, hub: Hub::new(), remote: Mutex::new(None) });
+            app.manage(Ctx { shared: shared.clone(), hub: Hub::new(), remote: Mutex::new(None) });
+            state::spawn_warm(shared, None);
 
             let handle = app.handle().clone();
             {
