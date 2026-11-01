@@ -138,12 +138,14 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     empty.classList.toggle("hidden", state.sounds.length > 0);
     const playing = new Set(state.playing);
     stop.classList.toggle("on", playing.size > 0);
-    const seen = new Set();
+    // Drop tiles the server no longer has before the walk, so the cursor never rests on a stale
+    // node (which would make every live tile after it look out of place and get moved).
+    const live = new Set(state.sounds.map((s) => s.id));
+    for (const el of [...grid.children]) if (!live.has(el.dataset.id)) el.remove();
     // Walk the grid in server order and move a node only when it is out of place: moving a
     // node restarts its CSS animations, which would reset every running sweep on each state push.
     let cursor = grid.firstElementChild;
     for (const s of state.sounds) {
-      seen.add(s.id);
       let el = grid.querySelector(`[data-id="${s.id}"]`);
       if (!el) {
         el = document.createElement("button");
@@ -175,7 +177,6 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
       if (el === cursor) cursor = cursor.nextElementSibling;
       else grid.insertBefore(el, cursor);
     }
-    for (const el of [...grid.children]) if (!seen.has(el.dataset.id)) el.remove();
   }
 
   async function status() {
