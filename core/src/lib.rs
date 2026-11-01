@@ -4,5 +4,7 @@ pub mod config;
 
 pub mod audio;
 
+pub mod library;
+
 #[cfg(test)]
 pub mod test_util;
