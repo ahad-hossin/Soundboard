@@ -171,7 +171,8 @@ fn show_main_window(app: &AppHandle) {
 
 /// Makes the Windows Run key entry match the saved setting. A failure is logged, never fatal.
 fn sync_autostart(app: &AppHandle) {
-    let want = lock(&app.state::<Ctx>().shared).config.startup.autostart;
+    // A dev build must never register itself: the Run key would then point at target\debug.
+    let want = lock(&app.state::<Ctx>().shared).config.startup.autostart && !cfg!(debug_assertions);
     let launcher = app.autolaunch();
     if launcher.is_enabled().unwrap_or(false) != want {
         let result = if want { launcher.enable() } else { launcher.disable() };
