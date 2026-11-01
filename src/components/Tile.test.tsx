@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false };
+const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 2.5, play_seq: 1 };
 
 function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void) {
   return (
@@ -48,6 +48,49 @@ describe("Tile", () => {
     renderTile({ color: "#2EC4B6" });
     expect(screen.getByRole("button", { name: "Airhorn" })).toHaveStyle({ backgroundColor: "#2EC4B6" });
     expect(document.querySelector("span[aria-hidden='true']")).toBeNull();
+  });
+
+  it("decorates a no-image tile with gradient layers over its color", () => {
+    renderTile({ color: "#2EC4B6" });
+    const btn = screen.getByRole("button", { name: "Airhorn" });
+    expect(btn.style.backgroundImage).toContain("radial-gradient");
+    expect(btn).toHaveStyle({ backgroundColor: "#2EC4B6" });
+  });
+
+  it("does not decorate an image tile", () => {
+    renderTile({ image_path: "C:/x/s1.png" });
+    expect(screen.getByRole("button", { name: "Airhorn" }).style.backgroundImage).toBe("");
+  });
+
+  it("shows no sweep while idle", () => {
+    renderTile();
+    expect(screen.queryByTestId("sweep")).toBeNull();
+  });
+
+  it("sweeps over the clip duration while playing", () => {
+    renderTile({ duration_secs: 2.5 }, true);
+    const sweep = screen.getByTestId("sweep");
+    expect(sweep.style.animationDuration).toBe("2.5s");
+    expect(sweep).not.toHaveClass("sweep-pulse");
+  });
+
+  it("pulses an indeterminate bar when the duration is unknown", () => {
+    renderTile({ duration_secs: null }, true);
+    const sweep = screen.getByTestId("sweep");
+    expect(sweep).toHaveClass("sweep-pulse");
+    expect(sweep.style.animationDuration).toBe("");
+  });
+
+  it("restarts the sweep with a new node when play_seq changes", () => {
+    const { rerender } = renderTile({ play_seq: 1 }, true);
+    const first = screen.getByTestId("sweep");
+    expect(first).toHaveAttribute("data-seq", "1");
+    rerender({ play_seq: 2 });
+    const second = screen.getByTestId("sweep");
+    expect(second).toHaveAttribute("data-seq", "2");
+    expect(second).not.toBe(first);
+    rerender({ play_seq: 2 });
+    expect(screen.getByTestId("sweep")).toBe(second);
   });
 
   it("shows the color as a 3px bottom bar on an image tile", () => {

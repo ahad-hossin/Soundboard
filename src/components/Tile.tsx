@@ -5,6 +5,7 @@ import type { MouseEvent } from "react";
 import { displayAccel } from "../lib/accel";
 import type { UiSound } from "../lib/api";
 import { cx } from "../lib/cx";
+import { tileDecoration } from "../lib/decor";
 import { useSliderDraft } from "../lib/useSliderDraft";
 
 interface Props {
@@ -31,9 +32,9 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         onContextMenu={onContextMenu}
         aria-label={sound.name}
         aria-pressed={playing}
-        style={src ? undefined : { backgroundColor: sound.color }}
+        style={src ? undefined : tileDecoration(sound.id, sound.color)}
         className={cx(
-          "relative block h-full w-full overflow-hidden rounded-md bg-surface-2 text-left text-white outline-none ring-accent transition-shadow focus-visible:ring-2",
+          "relative block h-full w-full overflow-hidden rounded-md bg-surface-2 text-left text-white outline-none ring-accent transition-[box-shadow,transform] duration-100 focus-visible:ring-2 active:scale-[0.96]",
           playing && "ring-2",
         )}
       >
@@ -42,6 +43,16 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
             <img src={src} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
             <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px]" style={{ backgroundColor: sound.color }} />
           </>
+        )}
+        {playing && (
+          <span
+            key={sound.play_seq}
+            data-testid="sweep"
+            data-seq={sound.play_seq}
+            aria-hidden
+            className={cx("pointer-events-none absolute bottom-0 left-0 h-0.5 bg-white/85", sound.duration_secs == null ? "sweep-pulse" : "sweep-bar")}
+            style={sound.duration_secs == null ? undefined : { animationDuration: `${sound.duration_secs}s` }}
+          />
         )}
         <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent p-2 pt-6 text-[13px] font-medium leading-tight">
           {sound.name}

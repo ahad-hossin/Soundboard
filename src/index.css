@@ -47,6 +47,12 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--color-text);
 }
 
+/* Tile progress bar: grows once over the clip, or pulses when the length is unknown. */
+@keyframes sweep { from { width: 0 } to { width: 100% } }
+@keyframes tile-pulse { from { opacity: 0.4 } to { opacity: 0.9 } }
+.sweep-bar { width: 0; animation: sweep linear forwards; }
+.sweep-pulse { width: 100%; animation: tile-pulse 1s ease-in-out infinite alternate; }
+
 @layer components {
   .btn {
     @apply h-8 rounded-md border border-border bg-surface px-3 text-text hover:bg-surface-2 disabled:opacity-40 disabled:hover:bg-surface aria-pressed:border-dim aria-pressed:bg-surface-2;

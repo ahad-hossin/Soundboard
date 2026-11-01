@@ -11,6 +11,10 @@ export interface UiSound {
   image_path: string | null;
   image_rev: number;
   missing_file: boolean;
+  /** Clip length once decoded; null until then. */
+  duration_secs: number | null;
+  /** Bumped on every successful play; restarts the progress sweep. */
+  play_seq: number;
 }
 export interface UiDevices {
   speakers: string | null;
