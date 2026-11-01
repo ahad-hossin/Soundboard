@@ -2,7 +2,7 @@ import { closestCenter, DndContext, PointerSensor, useSensor, useSensors, type D
 import { arrayMove, rectSortingStrategy, SortableContext } from "@dnd-kit/sortable";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect, useState } from "react";
-import { addPaths, pickImageFor } from "../lib/actions";
+import { addPaths, pickAndAddSounds, pickImageFor } from "../lib/actions";
 import { api, type UiSound } from "../lib/api";
 import { cx } from "../lib/cx";
 import { useStore } from "../lib/store";
@@ -88,6 +88,15 @@ export function TileGrid() {
                 onContextMenu={(e) => { e.preventDefault(); setMenu({ sound: s, x: e.clientX, y: e.clientY }); }}
               />
             ))}
+            <button
+              type="button"
+              onClick={() => void pickAndAddSounds()}
+              aria-label="Add sounds"
+              title="Add sounds"
+              className="flex aspect-square items-center justify-center rounded-md border border-dashed border-border text-3xl font-light text-mute outline-none ring-accent transition-colors hover:border-dim hover:text-dim focus-visible:ring-2"
+            >
+              +
+            </button>
           </div>
         </SortableContext>
       </DndContext>
