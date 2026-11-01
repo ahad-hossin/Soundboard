@@ -13,6 +13,7 @@ import { ConfirmDialog, RenameDialog } from "./Dialogs";
 import { EmptyState } from "./EmptyState";
 import { HotkeyCapture } from "./HotkeyCapture";
 import { Tile } from "./Tile";
+import { TrimEditor } from "./TrimEditor";
 
 type Menu = { sound: UiSound; x: number; y: number };
 
@@ -21,12 +22,15 @@ export function TileGrid() {
   const play = useStore((s) => s.play);
   const run = useStore((s) => s.run);
   const optimistic = useStore((s) => s.optimistic);
+  const pendingTrimId = useStore((s) => s.pendingTrimId);
+  const setPendingTrim = useStore((s) => s.setPendingTrim);
 
   const [menu, setMenu] = useState<Menu | null>(null);
   const [deleting, setDeleting] = useState<UiSound | null>(null);
   const [renaming, setRenaming] = useState<UiSound | null>(null);
   const [picking, setPicking] = useState<Menu | null>(null);
   const [capturing, setCapturing] = useState<UiSound | null>(null);
+  const [trimming, setTrimming] = useState<UiSound | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -52,6 +56,7 @@ export function TileGrid() {
 
   const menuItems = (s: UiSound): MenuItem[] => [
     { label: "Rename", onSelect: () => setRenaming(s) },
+    { label: s.trim ? "Trim audio (trimmed)" : "Trim audio", onSelect: () => setTrimming(s) },
     { label: s.image_path ? "Change image" : "Set image", onSelect: () => void pickImageFor(s.id) },
     ...(s.image_path ? [{ label: "Remove image", onSelect: () => void run(api.clearSoundImage(s.id)) }] : []),
     { label: "Change color", onSelect: () => menu && setPicking({ sound: s, x: menu.x, y: menu.y }) },
@@ -74,6 +79,8 @@ export function TileGrid() {
   }
 
   const playingSet = new Set([...state.playing, ...optimistic]);
+  // A single import opens the editor once the new sound is in state.
+  const imported = pendingTrimId ? state.sounds.find((s) => s.id === pendingTrimId) : undefined;
 
   return (
     <div className={cx("min-h-full rounded-md border border-transparent", dragOver && "border-accent")}>
@@ -140,6 +147,8 @@ export function TileGrid() {
           onClear={capturing.hotkey ? () => { void run(api.clearHotkey(capturing.id)); setCapturing(null); } : undefined}
         />
       )}
+      {trimming && <TrimEditor key={trimming.id} sound={trimming} mode="edit" onClose={() => setTrimming(null)} />}
+      {imported && !trimming && <TrimEditor key={imported.id} sound={imported} mode="import" onClose={() => setPendingTrim(null)} />}
     </div>
   );
 }

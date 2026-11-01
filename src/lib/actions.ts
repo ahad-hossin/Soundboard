@@ -5,12 +5,13 @@ import { useStore } from "./store";
 const AUDIO = ["mp3", "wav", "ogg", "flac"];
 const IMAGES = ["png", "jpg", "jpeg", "webp", "gif"];
 
-/** Imports files; each rejected file becomes a warning toast. */
+/** Imports files; each rejected file becomes a warning toast. A single new sound opens the trim editor. */
 export async function addPaths(paths: string[]) {
-  const { toast } = useStore.getState();
+  const { toast, setPendingTrim } = useStore.getState();
   try {
-    const rejected = await api.addSounds(paths);
+    const { rejected, added_ids } = await api.addSounds(paths);
     rejected.forEach((r) => toast("warn", r));
+    if (added_ids.length === 1) setPendingTrim(added_ids[0]);
   } catch (e) {
     toast("error", String(e));
   }

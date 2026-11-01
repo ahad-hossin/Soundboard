@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cx } from "../lib/cx";
 
-function Backdrop({ children, onCancel }: { children: ReactNode; onCancel: () => void }) {
+/** Centered dialog shell: Esc or a click outside cancels. `className` replaces the default width. */
+export function Backdrop({ children, onCancel, className }: { children: ReactNode; onCancel: () => void; className?: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } };
     window.addEventListener("keydown", onKey, true);
@@ -9,7 +10,7 @@ function Backdrop({ children, onCancel }: { children: ReactNode; onCancel: () =>
   }, [onCancel]);
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onMouseDown={onCancel}>
-      <div role="dialog" className="w-80 rounded-md border border-border bg-surface p-4 shadow-xl" onMouseDown={(e) => e.stopPropagation()}>
+      <div role="dialog" className={cx("rounded-md border border-border bg-surface p-4 shadow-xl", className ?? "w-80")} onMouseDown={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>

@@ -2,6 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface DeviceInfo { name: string; is_default: boolean }
+/** Play range in seconds from the start of the file; `end_secs` is exclusive. */
+export interface Trim { start_secs: number; end_secs: number }
+export interface Waveform {
+  /** Length of the whole file, ignoring any trim. */
+  duration_secs: number;
+  /** Peak per bar across the whole file, 0..1. */
+  peaks: number[];
+  trim: Trim | null;
+}
+export interface AddOutcome { rejected: string[]; added_ids: string[] }
 export interface UiSound {
   id: string;
   name: string;
@@ -11,10 +21,11 @@ export interface UiSound {
   image_path: string | null;
   image_rev: number;
   missing_file: boolean;
-  /** Clip length once decoded; null until then. */
+  /** Length of what plays (the trimmed range when trimmed) once decoded; null until then. */
   duration_secs: number | null;
   /** Bumped on every successful play; restarts the progress sweep. */
   play_seq: number;
+  trim: Trim | null;
 }
 export interface UiDevices {
   speakers: string | null;
@@ -45,7 +56,11 @@ export const api = {
   stopAll: () => invoke<void>("stop_all"),
   setMasterVolume: (value: number) => invoke<void>("set_master_volume", { value }),
   setSoundVolume: (id: string, value: number) => invoke<void>("set_sound_volume", { id, value }),
-  addSounds: (paths: string[]) => invoke<string[]>("add_sounds", { paths }),
+  addSounds: (paths: string[]) => invoke<AddOutcome>("add_sounds", { paths }),
+  getWaveform: (id: string) => invoke<Waveform>("get_waveform", { id }),
+  setTrim: (id: string, trim: Trim | null) => invoke<void>("set_trim", { id, trim }),
+  previewTrim: (id: string, startSecs: number, endSecs: number) => invoke<void>("preview_trim", { id, startSecs, endSecs }),
+  stopPreview: () => invoke<void>("stop_preview"),
   setSoundColor: (id: string, color: string) => invoke<void>("set_sound_color", { id, color }),
   renameSound: (id: string, name: string) => invoke<void>("rename_sound", { id, name }),
   deleteSound: (id: string) => invoke<void>("delete_sound", { id }),

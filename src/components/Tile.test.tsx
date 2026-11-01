@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 2.5, play_seq: 1 };
+const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 2.5, play_seq: 1, trim: null };
 
 function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void) {
   return (

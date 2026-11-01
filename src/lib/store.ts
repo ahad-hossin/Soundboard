@@ -10,6 +10,9 @@ interface Store {
   toasts: ToastItem[];
   /** Sound ids shown as playing before Rust confirms. */
   optimistic: Set<string>;
+  /** A sound just imported on its own; the grid opens the trim editor for it once it is in state. */
+  pendingTrimId: string | null;
+  setPendingTrim: (id: string | null) => void;
   init: () => Promise<void>;
   setPanel: (p: Panel) => void;
   togglePanel: (p: Exclude<Panel, null>) => void;
@@ -28,6 +31,8 @@ export const useStore = create<Store>((set, get) => ({
   panel: null,
   toasts: [],
   optimistic: new Set(),
+  pendingTrimId: null,
+  setPendingTrim: (pendingTrimId) => set({ pendingTrimId }),
 
   init: async () => {
     if (started) return;
