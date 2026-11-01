@@ -40,6 +40,16 @@ impl RemoteHandler for Handler {
         emit_state(&self.app, &ctx);
     }
 
+    fn set_sound_volume(&self, id: &str, value: f32) {
+        let ctx = self.app.state::<Ctx>();
+        let known = lock(&ctx.shared).set_sound_volume(id, value);
+        if known {
+            emit_state(&self.app, &ctx);
+        } else {
+            log::debug!("remote set_sound_volume for unknown sound {id}");
+        }
+    }
+
     fn image_path(&self, id: &str) -> Option<PathBuf> {
         let ctx = self.app.state::<Ctx>();
         let a = lock(&ctx.shared);

@@ -181,6 +181,18 @@ impl App {
         }
     }
 
+    /// Sets one sound's volume in the config and on any live voices. False if the id is unknown.
+    pub fn set_sound_volume(&mut self, id: &str, value: f32) -> bool {
+        let Some(s) = self.config.sound_mut(id) else {
+            return false;
+        };
+        let v = value.clamp(0.0, 1.0);
+        s.volume = v;
+        self.engine.set_sound_volume(id, v);
+        self.mark_dirty();
+        true
+    }
+
     /// Records that config changed; the reaper writes it within one tick.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;

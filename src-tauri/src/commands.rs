@@ -82,11 +82,11 @@ pub fn set_master_volume(value: f32, app: AppHandle, ctx: State<'_, Ctx>) {
 #[tauri::command]
 pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
     mutate(&ctx, |a| {
-        let s = a.config.sound_mut(&id).ok_or("That sound no longer exists")?;
-        s.volume = value.clamp(0.0, 1.0);
-        a.engine.set_sound_volume(&id, value);
-        a.mark_dirty();
-        Ok(())
+        if a.set_sound_volume(&id, value) {
+            Ok(())
+        } else {
+            Err("That sound no longer exists".to_string())
+        }
     })?;
     emit_state(&app, &ctx);
     Ok(())
