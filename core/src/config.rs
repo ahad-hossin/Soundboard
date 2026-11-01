@@ -117,25 +117,31 @@ impl LoadOutcome {
 }
 
 pub fn load(path: &Path) -> LoadOutcome {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return LoadOutcome::Fresh(Config::default()),
         Err(e) => {
-            log::warn!("config read failed: {e}");
-            return LoadOutcome::Fresh(Config::default());
+            log::warn!("config read failed, backing up and starting fresh: {e}");
+            return recover(path);
         }
     };
-    match serde_json::from_str::<Config>(&text) {
+    match serde_json::from_slice::<Config>(&bytes) {
         Ok(cfg) => LoadOutcome::Loaded(cfg),
         Err(e) => {
-            log::warn!("config parse failed, starting fresh: {e}");
-            let backup = path.with_extension("json.bak");
-            if let Err(e) = fs::copy(path, &backup) {
-                log::warn!("could not back up corrupt config: {e}");
-            }
-            LoadOutcome::Recovered { config: Config::default(), backup }
+            log::warn!("config parse failed, backing up and starting fresh: {e}");
+            recover(path)
         }
     }
+}
+
+/// Copy the existing config aside before defaulting, so a later save never
+/// silently overwrites the user's original file.
+fn recover(path: &Path) -> LoadOutcome {
+    let backup = path.with_extension("json.bak");
+    if let Err(e) = fs::copy(path, &backup) {
+        log::warn!("could not back up unreadable config: {e}");
+    }
+    LoadOutcome::Recovered { config: Config::default(), backup }
 }
 
 /// Atomic save: write to `config.json.tmp` then rename over the target.
@@ -208,6 +214,22 @@ mod tests {
             }
             other => panic!("expected Recovered, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unreadable_utf8_is_backed_up_and_defaulted() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let original = [0xFF, 0xFE, b'{', b'}'];
+        fs::write(&path, original).unwrap();
+        match load(&path) {
+            LoadOutcome::Recovered { config, backup } => {
+                assert!(config.sounds.is_empty());
+                assert_eq!(fs::read(&backup).unwrap(), original);
+            }
+            other => panic!("expected Recovered, got {other:?}"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 
     #[test]
