@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use soundboard_core::audio::decode::decode_file;
 use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
-use soundboard_core::config::{self, Config};
+use soundboard_core::config::{self, Config, Sound};
 use soundboard_core::library::Library;
+use soundboard_core::palette::PALETTE;
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
 use tauri::{AppHandle, Emitter, Manager};
@@ -70,6 +71,7 @@ pub struct UiSound {
     pub id: String,
     pub name: String,
     pub volume: f32,
+    pub color: String,
     pub hotkey: Option<String>,
     pub image_path: Option<String>,
     pub image_rev: u64,
@@ -262,6 +264,7 @@ impl App {
                         name: s.name.clone(),
                         volume: s.volume,
                         hotkey: s.hotkey.clone(),
+                        color: tile_color(s),
                         image_path: self.library.image_path(s).map(|p| p.to_string_lossy().into_owned()),
                         image_rev,
                         missing_file,
@@ -281,10 +284,21 @@ impl App {
                 .config
                 .sounds
                 .iter()
-                .map(|s| RemoteSound { id: s.id.clone(), name: s.name.clone(), volume: s.volume, has_image: s.image.is_some() })
+                .map(|s| RemoteSound {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    volume: s.volume,
+                    has_image: s.image.is_some(),
+                    color: tile_color(s),
+                })
                 .collect(),
         }
     }
+}
+
+/// The sound's color; sanitize always sets one, so the fallback only covers a sound built by hand.
+fn tile_color(s: &Sound) -> String {
+    s.color.clone().unwrap_or_else(|| PALETTE[0].to_string())
 }
 
 /// Non-loopback, non-link-local IPv4 addresses of this machine.

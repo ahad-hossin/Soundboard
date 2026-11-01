@@ -75,6 +75,7 @@ pub fn run() {
             commands::set_sound_volume,
             commands::add_sounds,
             commands::rename_sound,
+            commands::set_sound_color,
             commands::delete_sound,
             commands::set_sound_image,
             commands::clear_sound_image,

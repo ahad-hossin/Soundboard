@@ -5,6 +5,7 @@ use soundboard_core::audio::DeviceTarget;
 use soundboard_core::config::{self, Devices};
 use soundboard_core::hotkeys::{self, Owner};
 use soundboard_core::library::Library;
+use soundboard_core::palette::is_palette_color;
 use soundboard_core::remote::auth;
 use tauri::{AppHandle, State};
 
@@ -95,15 +96,23 @@ pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, C
 #[tauri::command]
 pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<Vec<String>, String> {
     // Short lock just to learn where the library lives; the heavy import runs unlocked.
-    let root = lock(&ctx.shared).library.root().to_path_buf();
+    // The current colors come along so new sounds get the least-used ones.
+    let (root, mut used_colors) = {
+        let a = lock(&ctx.shared);
+        let colors: Vec<String> = a.config.sounds.iter().filter_map(|s| s.color.clone()).collect();
+        (a.library.root().to_path_buf(), colors)
+    };
     let (imported, rejected) = tauri::async_runtime::spawn_blocking(move || {
         let mut imported = Vec::new();
         let mut rejected = Vec::new();
         match Library::open(root) {
             Ok(library) => {
                 for p in &paths {
-                    match library.import_sound(Path::new(p)) {
-                        Ok(s) => imported.push(s),
+                    match library.import_sound(Path::new(p), &used_colors.iter().map(String::as_str).collect::<Vec<_>>()) {
+                        Ok(s) => {
+                            used_colors.extend(s.color.clone());
+                            imported.push(s);
+                        }
                         Err(e) => rejected.push(e.to_string()),
                     }
                 }
@@ -136,6 +145,20 @@ pub fn rename_sound(id: String, name: String, app: AppHandle, ctx: State<'_, Ctx
     }
     mutate(&ctx, |a| {
         a.config.sound_mut(&id).ok_or("That sound no longer exists")?.name = name;
+        a.mark_dirty();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_sound_color(id: String, color: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    if !is_palette_color(&color) {
+        return Err("That color is not in the palette".into());
+    }
+    mutate(&ctx, |a| {
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.color = Some(color.to_ascii_uppercase());
         a.mark_dirty();
         Ok(())
     })?;
