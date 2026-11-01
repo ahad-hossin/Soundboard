@@ -7,6 +7,7 @@ import { api, type UiSound } from "../lib/api";
 import { cx } from "../lib/cx";
 import { useStore } from "../lib/store";
 import { Banner } from "./Banner";
+import { ColorPicker } from "./ColorPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { ConfirmDialog, RenameDialog } from "./Dialogs";
 import { EmptyState } from "./EmptyState";
@@ -24,6 +25,7 @@ export function TileGrid() {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [deleting, setDeleting] = useState<UiSound | null>(null);
   const [renaming, setRenaming] = useState<UiSound | null>(null);
+  const [picking, setPicking] = useState<Menu | null>(null);
   const [capturing, setCapturing] = useState<UiSound | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -52,6 +54,7 @@ export function TileGrid() {
     { label: "Rename", onSelect: () => setRenaming(s) },
     { label: s.image_path ? "Change image" : "Set image", onSelect: () => void pickImageFor(s.id) },
     ...(s.image_path ? [{ label: "Remove image", onSelect: () => void run(api.clearSoundImage(s.id)) }] : []),
+    { label: "Change color", onSelect: () => menu && setPicking({ sound: s, x: menu.x, y: menu.y }) },
     { label: s.hotkey ? "Change hotkey" : "Set hotkey", onSelect: () => setCapturing(s) },
     ...(s.hotkey ? [{ label: "Clear hotkey", onSelect: () => void run(api.clearHotkey(s.id)) }] : []),
     { label: "Delete", danger: true, onSelect: () => setDeleting(s) },
@@ -102,6 +105,15 @@ export function TileGrid() {
       </DndContext>
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.sound)} onClose={() => setMenu(null)} />}
+      {picking && (
+        <ColorPicker
+          x={picking.x}
+          y={picking.y}
+          current={picking.sound.color}
+          onPick={(color) => void run(api.setSoundColor(picking.sound.id, color))}
+          onClose={() => setPicking(null)}
+        />
+      )}
       {deleting && (
         <ConfirmDialog
           title={`Delete "${deleting.name}"? The file is removed from the soundboard.`}

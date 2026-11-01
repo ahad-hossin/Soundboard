@@ -31,18 +31,19 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         onContextMenu={onContextMenu}
         aria-label={sound.name}
         aria-pressed={playing}
+        style={src ? undefined : { backgroundColor: sound.color }}
         className={cx(
-          "relative block h-full w-full overflow-hidden rounded-md bg-surface-2 text-left outline-none ring-accent transition-shadow focus-visible:ring-2",
+          "relative block h-full w-full overflow-hidden rounded-md bg-surface-2 text-left text-white outline-none ring-accent transition-shadow focus-visible:ring-2",
           playing && "ring-2",
         )}
       >
-        {src && <img src={src} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />}
-        <span
-          className={cx(
-            "absolute inset-x-0 bottom-0 truncate p-2 text-[13px] font-medium leading-tight",
-            src && "bg-gradient-to-t from-black/70 to-transparent pt-6",
-          )}
-        >
+        {src && (
+          <>
+            <img src={src} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+            <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px]" style={{ backgroundColor: sound.color }} />
+          </>
+        )}
+        <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent p-2 pt-6 text-[13px] font-medium leading-tight">
           {sound.name}
         </span>
         {sound.hotkey && (

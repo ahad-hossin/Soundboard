@@ -25,10 +25,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;heigh
 main{flex:1;overflow-y:auto;padding:8px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media (min-width:600px){.grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}}
-.tile{position:relative;aspect-ratio:1;border:0;border-radius:var(--radius);background:var(--surface-2);overflow:hidden;text-align:left;padding:0;transition:transform .08s}
+.tile{position:relative;aspect-ratio:1;border:0;border-radius:var(--radius);background:var(--c,var(--surface-2));overflow:hidden;text-align:left;padding:0;transition:transform .08s}
 .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
-.tile .name{position:absolute;left:0;right:0;bottom:0;padding:8px;font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tile.img .name{padding-top:24px;background:linear-gradient(to top,rgba(0,0,0,.72),transparent)}
+.tile .name{position:absolute;left:0;right:0;bottom:0;padding:8px;padding-top:24px;color:#fff;background:linear-gradient(to top,rgba(0,0,0,.72),transparent);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile .bar{display:none;position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--c)}
+.tile.img .bar{display:block}
 .tile.playing{box-shadow:0 0 0 2px var(--accent)}
 .tile:active{transform:scale(.97)}
 footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
@@ -97,6 +98,10 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
         el.className = "tile";
         el.dataset.id = s.id;
         el.addEventListener("click", () => { el.classList.add("playing"); buzz(); send({ type: "play", id: s.id }); });
+        const bar = document.createElement("span");
+        bar.className = "bar";
+        bar.setAttribute("aria-hidden", "true");
+        el.appendChild(bar);
         const name = document.createElement("span");
         name.className = "name";
         el.appendChild(name);
@@ -109,6 +114,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
       if (img && img.getAttribute("src") !== wantImg) img.src = wantImg;
       el.querySelector(".name").textContent = s.name;
       el.setAttribute("aria-label", s.name);
+      el.style.setProperty("--c", s.color);
       el.classList.toggle("img", s.has_image);
       el.classList.toggle("playing", playing.has(s.id));
       grid.appendChild(el); // re-append keeps server order

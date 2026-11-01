@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", image_path: null, image_rev: 0, missing_file: false };
+const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false };
 
 function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void) {
   return (
@@ -42,6 +42,20 @@ describe("Tile", () => {
   it("renders the image when present", () => {
     renderTile({ image_path: "C:/x/s1.png" });
     expect(document.querySelector("img")?.getAttribute("src")).toBe("asset://C:/x/s1.png?v=0");
+  });
+
+  it("fills the tile with its color when there is no image", () => {
+    renderTile({ color: "#2EC4B6" });
+    expect(screen.getByRole("button", { name: "Airhorn" })).toHaveStyle({ backgroundColor: "#2EC4B6" });
+    expect(document.querySelector("span[aria-hidden='true']")).toBeNull();
+  });
+
+  it("shows the color as a 3px bottom bar on an image tile", () => {
+    renderTile({ color: "#2EC4B6", image_path: "C:/x/s1.png" });
+    const bar = document.querySelector("span[aria-hidden='true']");
+    expect(bar).toHaveStyle({ backgroundColor: "#2EC4B6" });
+    expect(bar).toHaveClass("bottom-0", "inset-x-0", "h-[3px]");
+    expect(screen.getByRole("button", { name: "Airhorn" }).style.backgroundColor).toBe("");
   });
 
   it("flags a missing file", () => {

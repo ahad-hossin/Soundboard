@@ -7,6 +7,7 @@ export interface UiSound {
   name: string;
   volume: number;
   hotkey: string | null;
+  color: string;
   image_path: string | null;
   image_rev: number;
   missing_file: boolean;
@@ -39,6 +40,7 @@ export const api = {
   setMasterVolume: (value: number) => invoke<void>("set_master_volume", { value }),
   setSoundVolume: (id: string, value: number) => invoke<void>("set_sound_volume", { id, value }),
   addSounds: (paths: string[]) => invoke<string[]>("add_sounds", { paths }),
+  setSoundColor: (id: string, color: string) => invoke<void>("set_sound_color", { id, color }),
   renameSound: (id: string, name: string) => invoke<void>("rename_sound", { id, name }),
   deleteSound: (id: string) => invoke<void>("delete_sound", { id }),
   setSoundImage: (id: string, path: string) => invoke<void>("set_sound_image", { id, path }),
