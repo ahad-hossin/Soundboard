@@ -403,6 +403,11 @@ pub fn set_startup(
     app: AppHandle,
     ctx: State<'_, Ctx>,
 ) -> Result<(), String> {
+    // A dev build would register target\debug\soundboard.exe in the Run key and keep starting
+    // that binary at login even after the installer is used, so only the installed app may enable it.
+    if autostart && cfg!(debug_assertions) {
+        return Err("Start with Windows is only available in the installed app, not in dev mode".into());
+    }
     let launcher = app.autolaunch();
     let result = if autostart { launcher.enable() } else { launcher.disable() };
     // Keep the stored flag equal to the real registration so the next launch does not retry.

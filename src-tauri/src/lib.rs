@@ -22,7 +22,12 @@ pub fn run() {
     env_logger::init();
     tauri::Builder::default()
         // Must be the first plugin: a second launch brings the existing window up and exits.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // The startup entry firing while the app already runs should stay quiet.
+            if !args.iter().skip(1).any(|a| a == STARTUP_ARG) {
+                show_main_window(app);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -149,7 +154,7 @@ const STARTUP_ARG: &str = "--minimized";
 /// started by the Windows startup entry.
 fn start_hidden(app: &AppHandle) -> bool {
     let option = lock(&app.state::<Ctx>().shared).config.startup.start_minimized;
-    option || std::env::args().any(|a| a == STARTUP_ARG)
+    option || std::env::args().skip(1).any(|a| a == STARTUP_ARG)
 }
 
 fn show_main_window(app: &AppHandle) {
