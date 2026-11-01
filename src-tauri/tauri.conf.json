@@ -36,6 +36,12 @@
     "shortDescription": "Soundboard",
     "longDescription": "Desktop soundboard with dual output, global hotkeys and a phone remote.",
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
