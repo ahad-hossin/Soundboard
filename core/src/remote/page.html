@@ -144,13 +144,14 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
         el.className = "tile";
         el.dataset.id = s.id;
         el.addEventListener("click", () => { el.classList.add("playing"); buzz(); send({ type: "play", id: s.id }); });
+        const name = document.createElement("span");
+        name.className = "name";
+        el.appendChild(name);
+        // After the name so the color bar paints above the scrim and keeps its true color.
         const bar = document.createElement("span");
         bar.className = "bar";
         bar.setAttribute("aria-hidden", "true");
         el.appendChild(bar);
-        const name = document.createElement("span");
-        name.className = "name";
-        el.appendChild(name);
         grid.appendChild(el);
       }
       const wantImg = s.has_image ? `/img/${s.id}` : "";

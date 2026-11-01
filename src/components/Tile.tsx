@@ -39,11 +39,12 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         )}
       >
         {src && (
-          <>
-            <img src={src} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
-            <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px]" style={{ backgroundColor: sound.color }} />
-          </>
+          <img src={src} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
         )}
+        <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent p-2 pt-6 text-[13px] font-medium leading-tight">
+          {sound.name}
+        </span>
+        {src && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px]" style={{ backgroundColor: sound.color }} />}
         {playing && (
           <span
             key={sound.play_seq}
@@ -54,9 +55,6 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
             style={sound.duration_secs == null ? undefined : { animationDuration: `${sound.duration_secs}s` }}
           />
         )}
-        <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent p-2 pt-6 text-[13px] font-medium leading-tight">
-          {sound.name}
-        </span>
         {sound.hotkey && (
           <span className="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[11px] text-dim">
             {displayAccel(sound.hotkey)}
