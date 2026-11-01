@@ -28,7 +28,8 @@ main{flex:1;overflow-y:auto;padding:8px}
 .tile{position:relative;aspect-ratio:1;border:0;border-radius:var(--radius);background:var(--c,var(--surface-2));overflow:hidden;text-align:left;padding:0;transition:transform .08s}
 .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
 .tile .name{position:absolute;left:0;right:0;bottom:0;padding:8px;padding-top:24px;color:#fff;background:linear-gradient(to top,rgba(0,0,0,.72),transparent);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tile .sweep{position:absolute;left:0;bottom:0;height:2px;width:0;background:rgba(255,255,255,.85);animation:sweep linear forwards;pointer-events:none}
+.tile .track{position:absolute;left:8px;right:8px;bottom:6px;height:2px;border-radius:1px;background:rgba(255,255,255,.2);pointer-events:none}
+.tile .sweep{display:block;height:100%;width:0;border-radius:1px;background:rgba(255,255,255,.85);animation:sweep linear forwards}
 .tile .sweep.indeterminate{width:100%;animation:pulse 1s ease-in-out infinite alternate}
 @keyframes sweep{from{width:0}to{width:100%}}
 @keyframes pulse{from{opacity:.4}to{opacity:.9}}
@@ -112,20 +113,23 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     st.backgroundRepeat = `no-repeat, ${repeat}`;
   }
 
-  // The progress sweep lives only while the tile plays; a new play_seq replaces the node so it restarts.
+  // The progress track lives only while the tile plays; a new play_seq replaces the node so the sweep restarts.
   function syncSweep(el, s, isPlaying) {
-    let sweep = el.querySelector(".sweep");
-    if (!isPlaying) { if (sweep) sweep.remove(); return; }
+    let track = el.querySelector(".track");
+    if (!isPlaying) { if (track) track.remove(); return; }
     const seq = String(s.play_seq);
     const dur = s.duration_secs;
-    if (sweep && sweep.dataset.seq === seq) return;
-    if (sweep) sweep.remove();
-    sweep = document.createElement("span");
-    sweep.className = dur == null ? "sweep indeterminate" : "sweep";
-    sweep.dataset.seq = seq;
-    sweep.setAttribute("aria-hidden", "true");
-    if (dur != null) sweep.style.animationDuration = `${dur}s`;
-    el.appendChild(sweep);
+    if (track && track.dataset.seq === seq) return;
+    if (track) track.remove();
+    track = document.createElement("span");
+    track.className = "track";
+    track.dataset.seq = seq;
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = dur == null ? "sweep indeterminate" : "sweep";
+    if (dur != null) fill.style.animationDuration = `${dur}s`;
+    track.appendChild(fill);
+    el.appendChild(track);
   }
 
   function render() {
@@ -135,6 +139,9 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     const playing = new Set(state.playing);
     stop.classList.toggle("on", playing.size > 0);
     const seen = new Set();
+    // Walk the grid in server order and move a node only when it is out of place: moving a
+    // node restarts its CSS animations, which would reset every running sweep on each state push.
+    let cursor = grid.firstElementChild;
     for (const s of state.sounds) {
       seen.add(s.id);
       let el = grid.querySelector(`[data-id="${s.id}"]`);
@@ -152,7 +159,6 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
         bar.className = "bar";
         bar.setAttribute("aria-hidden", "true");
         el.appendChild(bar);
-        grid.appendChild(el);
       }
       const wantImg = s.has_image ? `/img/${s.id}` : "";
       let img = el.querySelector("img");
@@ -166,7 +172,8 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
       el.classList.toggle("img", s.has_image);
       el.classList.toggle("playing", playing.has(s.id));
       syncSweep(el, s, playing.has(s.id));
-      grid.appendChild(el); // re-append keeps server order
+      if (el === cursor) cursor = cursor.nextElementSibling;
+      else grid.insertBefore(el, cursor);
     }
     for (const el of [...grid.children]) if (!seen.has(el.dataset.id)) el.remove();
   }
