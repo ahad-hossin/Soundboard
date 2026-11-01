@@ -47,6 +47,8 @@ export interface UiState {
   playing: string[];
   startup_notices: string[];
 }
+export type FirewallState = "allowed" | "blocked" | "none" | "unknown";
+export interface FirewallStatus { exe: string; state: FirewallState }
 export type ToastLevel = "info" | "warn" | "error";
 export interface Toast { level: ToastLevel; message: string }
 
@@ -81,6 +83,8 @@ export const api = {
     invoke<void>("set_startup", { autostart, startMinimized, closeToTray }),
   restartRemote: () => invoke<void>("restart_remote"),
   openSupportPage: () => invoke<void>("open_support_page"),
+  firewallStatus: () => invoke<FirewallStatus>("firewall_status"),
+  firewallAllow: () => invoke<FirewallStatus>("firewall_allow"),
   onState: (cb: (s: UiState) => void): Promise<UnlistenFn> => listen<UiState>("state-changed", (e) => cb(e.payload)),
   onToast: (cb: (t: Toast) => void): Promise<UnlistenFn> => listen<Toast>("toast", (e) => cb(e.payload)),
 };

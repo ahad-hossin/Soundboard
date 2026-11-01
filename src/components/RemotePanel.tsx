@@ -1,11 +1,52 @@
+import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { api } from "../lib/api";
+import { api, type FirewallState, type FirewallStatus } from "../lib/api";
 import { useStore } from "../lib/store";
+
+const FIREWALL_LABEL: Record<FirewallState, string> = {
+  allowed: "Windows Firewall: allowed",
+  blocked: "Windows Firewall: blocked",
+  none: "Windows Firewall: no rule yet",
+  unknown: "Windows Firewall: could not check",
+};
+const FIREWALL_TONE: Record<FirewallState, string> = {
+  allowed: "text-dim",
+  blocked: "text-danger",
+  none: "text-dim",
+  unknown: "text-mute",
+};
 
 export function RemotePanel() {
   const remote = useStore((s) => s.state!.remote);
   const run = useStore((s) => s.run);
   const toast = useStore((s) => s.toast);
+  // null while the check runs.
+  const [firewall, setFirewall] = useState<FirewallStatus | null>(null);
+  const [allowing, setAllowing] = useState(false);
+  const running = remote.port !== null;
+
+  // Checks when the panel opens and whenever the server comes up.
+  useEffect(() => {
+    if (!running) return;
+    let live = true;
+    setFirewall(null);
+    api.firewallStatus().then(
+      (s) => live && setFirewall(s),
+      () => live && setFirewall({ exe: "", state: "unknown" }),
+    );
+    return () => { live = false; };
+  }, [running]);
+
+  const allow = async () => {
+    setAllowing(true);
+    try {
+      setFirewall(await api.firewallAllow());
+    } catch {
+      toast("error", "Could not change the firewall rule");
+    } finally {
+      setAllowing(false);
+    }
+  };
 
   if (remote.port === null) {
     return (
@@ -42,8 +83,17 @@ export function RemotePanel() {
       <p className="mb-4 text-dim">
         {remote.clients === 0 ? "No phones connected" : remote.clients === 1 ? "1 phone connected" : `${remote.clients} phones connected`}
       </p>
-      <p className="text-xs text-mute">
-        If your phone cannot connect, allow Soundboard through Windows Firewall on private networks.
+      <p className="text-dim">Listening on port {remote.port}</p>
+      <p className={firewall ? FIREWALL_TONE[firewall.state] : "text-dim"}>
+        {firewall ? FIREWALL_LABEL[firewall.state] : "Checking…"}
+      </p>
+      {firewall && (firewall.state === "blocked" || firewall.state === "none") && (
+        <button type="button" className="btn mt-2" disabled={allowing} onClick={() => void allow()}>
+          Allow through Windows Firewall
+        </button>
+      )}
+      <p className="mt-4 text-xs text-mute">
+        If the phone still cannot connect, check that the PC and phone are on the same Wi-Fi.
       </p>
     </aside>
   );
