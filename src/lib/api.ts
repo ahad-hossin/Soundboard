@@ -11,7 +11,14 @@ export interface UiSound {
   image_rev: number;
   missing_file: boolean;
 }
-export interface UiDevices { speakers: string | null; virtual_mic: string | null; available: DeviceInfo[] }
+export interface UiDevices {
+  speakers: string | null;
+  virtual_mic: string | null;
+  microphone: string | null;
+  mic_gain: number;
+  available: DeviceInfo[];
+  available_inputs: DeviceInfo[];
+}
 export interface UiRemote { port: number | null; error: string | null; pin_set: boolean; addresses: string[]; clients: number }
 export interface UiState {
   master_volume: number;
@@ -40,7 +47,9 @@ export const api = {
   setHotkey: (id: string, accelerator: string) => invoke<void>("set_hotkey", { id, accelerator }),
   clearHotkey: (id: string) => invoke<void>("clear_hotkey", { id }),
   setStopAllHotkey: (accelerator: string) => invoke<void>("set_stop_all_hotkey", { accelerator }),
-  setDevices: (speakers: string | null, virtualMic: string | null) => invoke<void>("set_devices", { speakers, virtualMic }),
+  setDevices: (speakers: string | null, virtualMic: string | null, microphone: string | null) =>
+    invoke<void>("set_devices", { speakers, virtualMic, microphone }),
+  setMicGain: (value: number) => invoke<void>("set_mic_gain", { value }),
   refreshDevices: () => invoke<void>("refresh_devices"),
   testTone: (device: string | null) => invoke<void>("test_tone", { device }),
   setRemotePort: (port: number) => invoke<void>("set_remote_port", { port }),

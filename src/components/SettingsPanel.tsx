@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { displayAccel } from "../lib/accel";
 import { api, type DeviceInfo } from "../lib/api";
 import { useStore } from "../lib/store";
+import { useSliderDraft } from "../lib/useSliderDraft";
 import { validatePin, validatePort } from "../lib/validate";
 import { HotkeyCapture } from "./HotkeyCapture";
 
 function DeviceSelect({ id, label, value, available, onChange, onTest }: {
   id: string; label: string; value: string | null; available: DeviceInfo[];
-  onChange: (v: string | null) => void; onTest: () => void;
+  onChange: (v: string | null) => void; onTest?: () => void;
 }) {
   const missing = value && !available.some((d) => d.name === value);
   return (
@@ -21,7 +22,7 @@ function DeviceSelect({ id, label, value, available, onChange, onTest }: {
             <option key={d.name} value={d.name}>{d.name}{d.is_default ? " (default)" : ""}</option>
           ))}
         </select>
-        <button type="button" className="btn" disabled={!value} onClick={onTest}>Test</button>
+        {onTest && <button type="button" className="btn" disabled={!value} onClick={onTest}>Test</button>}
       </div>
     </div>
   );
@@ -34,7 +35,8 @@ export function SettingsPanel() {
   const [capturing, setCapturing] = useState(false);
   const [port, setPort] = useState(String(state.remote.port ?? 7331));
   const [pin, setPin] = useState("");
-  const { speakers, virtual_mic, available } = state.devices;
+  const { speakers, virtual_mic, microphone, available, available_inputs } = state.devices;
+  const micGain = useSliderDraft(state.devices.mic_gain, (v) => void run(api.setMicGain(v)));
 
   // The device list is cached in the backend; re-enumerate whenever the panel opens.
   useEffect(() => {
@@ -57,9 +59,19 @@ export function SettingsPanel() {
   return (
     <aside className="panel">
       <DeviceSelect id="dev-speakers" label="Speakers" value={speakers} available={available}
-        onChange={(v) => void run(api.setDevices(v, virtual_mic))} onTest={() => void run(api.testTone(speakers))} />
+        onChange={(v) => void run(api.setDevices(v, virtual_mic, microphone))} onTest={() => void run(api.testTone(speakers))} />
       <DeviceSelect id="dev-mic" label="Virtual mic" value={virtual_mic} available={available}
-        onChange={(v) => void run(api.setDevices(speakers, v))} onTest={() => void run(api.testTone(virtual_mic))} />
+        onChange={(v) => void run(api.setDevices(speakers, v, microphone))} onTest={() => void run(api.testTone(virtual_mic))} />
+      <DeviceSelect id="dev-input" label="Microphone" value={microphone} available={available_inputs}
+        onChange={(v) => void run(api.setDevices(speakers, virtual_mic, v))} />
+
+      <div className="mb-4">
+        <label className="label" htmlFor="mic-gain">Mic gain</label>
+        <div className="flex items-center gap-2">
+          <input id="mic-gain" type="range" min={0} max={2} step={0.05} className="flex-1" {...micGain} />
+          <span className="w-12 text-right font-mono text-dim">{micGain.value.toFixed(2)}x</span>
+        </div>
+      </div>
 
       <div className="mb-4">
         <span className="label">Stop All hotkey</span>

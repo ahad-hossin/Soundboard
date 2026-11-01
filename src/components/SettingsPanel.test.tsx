@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useStore } from "../lib/store";
 import { api } from "../lib/api";
@@ -8,6 +8,7 @@ vi.mock("../lib/api", () => ({
   api: {
     refreshDevices: vi.fn(),
     setDevices: vi.fn(),
+    setMicGain: vi.fn(),
     testTone: vi.fn(),
     setStopAllHotkey: vi.fn(),
     setRemotePort: vi.fn(),
@@ -17,7 +18,14 @@ vi.mock("../lib/api", () => ({
 
 const base = {
   master_volume: 0.8,
-  devices: { speakers: "Ghost Speakers", virtual_mic: null, available: [{ name: "Speakers (Realtek)", is_default: true }, { name: "CABLE Input", is_default: false }] },
+  devices: {
+    speakers: "Ghost Speakers",
+    virtual_mic: null,
+    microphone: null,
+    mic_gain: 1,
+    available: [{ name: "Speakers (Realtek)", is_default: true }, { name: "CABLE Input", is_default: false }],
+    available_inputs: [{ name: "Headset Mic", is_default: true }, { name: "Webcam Mic", is_default: false }],
+  },
   stop_all_hotkey: "Ctrl+Shift+F12",
   remote: { port: 7331, error: null, pin_set: false, addresses: ["192.168.1.20"], clients: 0 },
   sounds: [],
@@ -62,17 +70,56 @@ describe("SettingsPanel", () => {
   it("disables Test for an empty slot and enables it for a configured one", () => {
     render(<SettingsPanel />);
     const tests = screen.getAllByRole("button", { name: "Test" });
+    expect(tests).toHaveLength(2);
     expect(tests[0]).toBeEnabled();
     expect(tests[1]).toBeDisabled();
   });
 
-  it("passes the other device slot through unchanged when one changes", async () => {
+  it("passes the other device slots through unchanged when one changes", async () => {
     const user = userEvent.setup();
+    useStore.setState({ state: { ...base, devices: { ...base.devices, microphone: "Webcam Mic" } } });
     render(<SettingsPanel />);
     await user.selectOptions(screen.getByLabelText("Speakers"), "CABLE Input");
-    expect(api.setDevices).toHaveBeenLastCalledWith("CABLE Input", null);
+    expect(api.setDevices).toHaveBeenLastCalledWith("CABLE Input", null, "Webcam Mic");
     await user.selectOptions(screen.getByLabelText("Virtual mic"), "CABLE Input");
-    expect(api.setDevices).toHaveBeenLastCalledWith("Ghost Speakers", "CABLE Input");
+    expect(api.setDevices).toHaveBeenLastCalledWith("Ghost Speakers", "CABLE Input", "Webcam Mic");
+  });
+
+  it("lists input devices under Microphone and sets the chosen one", async () => {
+    const user = userEvent.setup();
+    useStore.setState({ state: { ...base, devices: { ...base.devices, virtual_mic: "CABLE Input" } } });
+    render(<SettingsPanel />);
+    const mic = screen.getByLabelText("Microphone") as HTMLSelectElement;
+    expect(mic.value).toBe("");
+    expect(within(mic).getByText("None")).toBeInTheDocument();
+    expect(within(mic).getByText("Headset Mic (default)")).toBeInTheDocument();
+    expect(within(mic).getByText("Webcam Mic")).toBeInTheDocument();
+    expect(within(mic).queryByText("CABLE Input")).not.toBeInTheDocument();
+    await user.selectOptions(mic, "Headset Mic");
+    expect(api.setDevices).toHaveBeenLastCalledWith("Ghost Speakers", "CABLE Input", "Headset Mic");
+  });
+
+  it("keeps a missing configured microphone selectable", () => {
+    useStore.setState({ state: { ...base, devices: { ...base.devices, microphone: "Old USB Mic" } } });
+    render(<SettingsPanel />);
+    const mic = screen.getByLabelText("Microphone") as HTMLSelectElement;
+    expect(mic.value).toBe("Old USB Mic");
+    expect(within(mic).getByText("Old USB Mic (missing)")).toBeInTheDocument();
+  });
+
+  it("shows the mic gain and commits it on pointer up", () => {
+    useStore.setState({ state: { ...base, devices: { ...base.devices, mic_gain: 1.25 } } });
+    render(<SettingsPanel />);
+    const gain = screen.getByLabelText("Mic gain") as HTMLInputElement;
+    expect(gain.min).toBe("0");
+    expect(gain.max).toBe("2");
+    expect(gain.step).toBe("0.05");
+    expect(screen.getByText("1.25x")).toBeInTheDocument();
+    fireEvent.change(gain, { target: { value: "1.5" } });
+    expect(screen.getByText("1.50x")).toBeInTheDocument();
+    expect(api.setMicGain).not.toHaveBeenCalled();
+    fireEvent.pointerUp(gain);
+    expect(api.setMicGain).toHaveBeenCalledWith(1.5);
   });
 
   it("rejects an invalid port with a toast and applies a valid one on Enter", async () => {
