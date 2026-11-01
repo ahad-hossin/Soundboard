@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
@@ -34,10 +34,33 @@ fn display_name(path: &Path) -> String {
 /// Name inside the library folders that import can never create (no audio/image extension).
 const INVALID_NAME: &str = "__invalid__";
 
+/// True when `name` is a single plain file name: exactly one `Normal` path component and no
+/// separator or drive colon. Ellipses such as `Oh no...wav` are fine; `..`, `.` and `a/b` are not.
+fn is_safe_name(name: &str) -> bool {
+    if name.contains(['/', '\\', ':']) {
+        return false;
+    }
+    let mut parts = Path::new(name).components();
+    matches!((parts.next(), parts.next()), (Some(Component::Normal(_)), None))
+}
+
+/// A storable file name for an import source: separators and colons become `_`, and anything
+/// still unsafe becomes `sound.<ext>`.
+fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
+    if is_safe_name(&cleaned) {
+        return cleaned;
+    }
+    match Path::new(name).extension().and_then(|e| e.to_str()) {
+        Some(ext) if is_safe_name(ext) => format!("sound.{ext}"),
+        _ => "sound".to_string(),
+    }
+}
+
 /// `dir/name`, unless `name` (read from config, possibly hand-edited) could escape `dir`;
 /// then a path inside `dir` that cannot exist, so reads miss and deletes do nothing.
 fn contained(dir: PathBuf, name: &str) -> PathBuf {
-    if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
+    if !is_safe_name(name) {
         log::warn!("ignoring unsafe library file name {name:?}");
         return dir.join(INVALID_NAME);
     }
@@ -91,7 +114,7 @@ impl Library {
             return Err(LibraryError::UnsupportedExtension(display));
         }
         decode_file(source).map_err(|_| LibraryError::Undecodable(display.clone()))?;
-        let (dest, mut out) = claim_unique(&self.sounds_dir(), &display)?;
+        let (dest, mut out) = claim_unique(&self.sounds_dir(), &safe_file_name(&display))?;
         let copied = File::open(source).and_then(|mut input| io::copy(&mut input, &mut out));
         drop(out);
         if let Err(e) = copied {
@@ -284,6 +307,33 @@ mod tests {
         assert!(outside.exists(), "delete never reaches outside the library");
         let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None };
         assert_eq!(lib.sound_path(&ok), lib.sounds_dir().join("clip (2).wav"));
+    }
+
+    #[test]
+    fn ellipsis_names_import_play_and_delete() {
+        let (_d, lib, src) = setup();
+        let p = src.join("a...wav");
+        write_test_wav(&p, 100);
+        let s = lib.import_sound(&p).unwrap();
+        assert_eq!(s.file, "a...wav");
+        let stored = lib.sound_path(&s);
+        assert_eq!(stored, lib.sounds_dir().join("a...wav"));
+        assert!(stored.exists(), "points at the real imported file");
+        lib.delete_sound(&s).unwrap();
+        assert!(!stored.exists(), "delete removes it, nothing orphaned");
+    }
+
+    #[test]
+    fn safe_names_and_sanitizing() {
+        for ok in ["a.wav", "Oh no...wav", "...wav", "clip (2).mp3"] {
+            assert!(is_safe_name(ok), "{ok}");
+        }
+        for bad in ["", ".", "..", "../x.wav", "sub/x.wav", "sub\\x.wav", "C:x.wav", "C:\\x.wav"] {
+            assert!(!is_safe_name(bad), "{bad}");
+        }
+        assert_eq!(safe_file_name("a...wav"), "a...wav");
+        assert_eq!(safe_file_name("C:x.wav"), "C_x.wav");
+        assert_eq!(safe_file_name(".."), "sound");
     }
 
     #[test]
