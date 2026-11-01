@@ -22,7 +22,7 @@ impl RemoteHandler for FakeHandler {
         ServerMsg::State {
             master_volume: 0.8,
             playing: vec![],
-            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: false }],
+            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: false, color: "#FF595E".into() }],
         }
     }
     fn play(&self, id: &str) {

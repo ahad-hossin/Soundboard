@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::audio::decode::{decode_file, has_supported_extension};
 use crate::config::Sound;
+use crate::palette::next_color;
 
 pub const IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
@@ -108,7 +109,7 @@ impl Library {
     }
 
     /// Validates, copies into `sounds/` (renaming on collision) and returns a new `Sound`.
-    pub fn import_sound(&self, source: &Path) -> Result<Sound, LibraryError> {
+    pub fn import_sound(&self, source: &Path, used_colors: &[&str]) -> Result<Sound, LibraryError> {
         let display = display_name(source);
         if !has_supported_extension(source) {
             return Err(LibraryError::UnsupportedExtension(display));
@@ -129,6 +130,7 @@ impl Library {
             image: None,
             volume: 1.0,
             hotkey: None,
+            color: Some(next_color(used_colors).to_string()),
         })
     }
 
@@ -212,7 +214,7 @@ mod tests {
         let (_d, lib, src) = setup();
         let p = src.join("notes.txt");
         std::fs::write(&p, "hello").unwrap();
-        assert!(matches!(lib.import_sound(&p), Err(LibraryError::UnsupportedExtension(n)) if n == "notes.txt"));
+        assert!(matches!(lib.import_sound(&p, &[]), Err(LibraryError::UnsupportedExtension(n)) if n == "notes.txt"));
     }
 
     #[test]
@@ -220,7 +222,7 @@ mod tests {
         let (_d, lib, src) = setup();
         let p = src.join("fake.wav");
         std::fs::write(&p, "not a wav").unwrap();
-        assert!(matches!(lib.import_sound(&p), Err(LibraryError::Undecodable(n)) if n == "fake.wav"));
+        assert!(matches!(lib.import_sound(&p, &[]), Err(LibraryError::Undecodable(n)) if n == "fake.wav"));
         assert_eq!(std::fs::read_dir(lib.sounds_dir()).unwrap().count(), 0, "nothing copied");
     }
 
@@ -229,8 +231,8 @@ mod tests {
         let (_d, lib, src) = setup();
         let p = src.join("clip.wav");
         write_test_wav(&p, 100);
-        let a = lib.import_sound(&p).unwrap();
-        let b = lib.import_sound(&p).unwrap();
+        let a = lib.import_sound(&p, &[]).unwrap();
+        let b = lib.import_sound(&p, &[]).unwrap();
         assert_eq!(a.name, "clip");
         assert_eq!(b.name, "clip");
         assert_eq!(a.file, "clip.wav");
@@ -242,11 +244,21 @@ mod tests {
     }
 
     #[test]
+    fn import_picks_the_least_used_color() {
+        let (_d, lib, src) = setup();
+        let p = src.join("clip.wav");
+        write_test_wav(&p, 100);
+        assert_eq!(lib.import_sound(&p, &[]).unwrap().color.as_deref(), Some("#FF595E"));
+        let used = ["#FF595E", "#ff924c"];
+        assert_eq!(lib.import_sound(&p, &used).unwrap().color.as_deref(), Some("#FFCA3A"));
+    }
+
+    #[test]
     fn import_image_validates_magic_and_replaces_old() {
         let (_d, lib, src) = setup();
         let wav = src.join("clip.wav");
         write_test_wav(&wav, 10);
-        let mut s = lib.import_sound(&wav).unwrap();
+        let mut s = lib.import_sound(&wav, &[]).unwrap();
 
         let txt = src.join("x.png");
         std::fs::write(&txt, "not an image even with png extension").unwrap();
@@ -276,7 +288,7 @@ mod tests {
         let (_d, lib, src) = setup();
         let wav = src.join("clip.wav");
         write_test_wav(&wav, 10);
-        let mut s = lib.import_sound(&wav).unwrap();
+        let mut s = lib.import_sound(&wav, &[]).unwrap();
         let png = src.join("p.png");
         std::fs::write(&png, PNG).unwrap();
         lib.import_image(&mut s, &png).unwrap();
@@ -299,13 +311,14 @@ mod tests {
                 image: Some(bad.into()),
                 volume: 1.0,
                 hotkey: None,
+                color: None,
             };
             assert_eq!(lib.sound_path(&s), lib.sounds_dir().join(INVALID_NAME), "{bad}");
             assert_eq!(lib.image_path(&s), Some(lib.images_dir().join(INVALID_NAME)), "{bad}");
             lib.delete_sound(&s).unwrap();
         }
         assert!(outside.exists(), "delete never reaches outside the library");
-        let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None };
+        let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None, color: None };
         assert_eq!(lib.sound_path(&ok), lib.sounds_dir().join("clip (2).wav"));
     }
 
@@ -314,7 +327,7 @@ mod tests {
         let (_d, lib, src) = setup();
         let p = src.join("a...wav");
         write_test_wav(&p, 100);
-        let s = lib.import_sound(&p).unwrap();
+        let s = lib.import_sound(&p, &[]).unwrap();
         assert_eq!(s.file, "a...wav");
         let stored = lib.sound_path(&s);
         assert_eq!(stored, lib.sounds_dir().join("a...wav"));
@@ -352,9 +365,9 @@ mod tests {
         let (_d, lib, src) = setup();
         let p = src.join("clip.wav");
         write_test_wav(&p, 100);
-        let a = lib.import_sound(&p).unwrap();
+        let a = lib.import_sound(&p, &[]).unwrap();
         std::fs::write(lib.sounds_dir().join("clip (2).wav"), "taken").unwrap();
-        let b = lib.import_sound(&p).unwrap();
+        let b = lib.import_sound(&p, &[]).unwrap();
         assert_eq!(a.file, "clip.wav");
         assert_eq!(b.file, "clip (3).wav");
         assert_eq!(std::fs::read(lib.sounds_dir().join("clip (2).wav")).unwrap(), b"taken", "not overwritten");

@@ -100,8 +100,8 @@ mod tests {
     fn cfg() -> Config {
         let mut c = Config::default();
         c.stop_all_hotkey = "Ctrl+Shift+F12".into();
-        c.sounds.push(Sound { id: "a".into(), name: "Airhorn".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: Some("Ctrl+Shift+Digit1".into()) });
-        c.sounds.push(Sound { id: "b".into(), name: "Bruh".into(), file: "b.wav".into(), image: None, volume: 1.0, hotkey: None });
+        c.sounds.push(Sound { id: "a".into(), name: "Airhorn".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: Some("Ctrl+Shift+Digit1".into()), color: None });
+        c.sounds.push(Sound { id: "b".into(), name: "Bruh".into(), file: "b.wav".into(), image: None, volume: 1.0, hotkey: None, color: None });
         c
     }
 

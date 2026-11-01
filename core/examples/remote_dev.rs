@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use soundboard_core::palette::PALETTE;
 use soundboard_core::remote::auth::{hash_pin, Lockout};
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
 use soundboard_core::remote::{bind, router, serve, Hub, RemoteHandler};
@@ -20,7 +21,13 @@ fn snapshot(playing: &[String]) -> ServerMsg {
         master_volume: 0.8,
         playing: playing.to_vec(),
         sounds: (1..=7)
-            .map(|i| RemoteSound { id: format!("s{i}"), name: format!("Sound {i}"), volume: 1.0, has_image: false })
+            .map(|i| RemoteSound {
+                id: format!("s{i}"),
+                name: format!("Sound {i}"),
+                volume: 1.0,
+                has_image: false,
+                color: PALETTE[i % PALETTE.len()].into(),
+            })
             .collect(),
     }
 }

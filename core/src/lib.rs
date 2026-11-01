@@ -2,6 +2,8 @@
 
 pub mod config;
 
+pub mod palette;
+
 pub mod audio;
 
 pub mod library;

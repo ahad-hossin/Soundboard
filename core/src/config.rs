@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::palette::next_color;
+
 pub const CONFIG_VERSION: u32 = 1;
 pub const DEFAULT_PORT: u16 = 7331;
 pub const DEFAULT_STOP_ALL_HOTKEY: &str = "Ctrl+Shift+F12";
@@ -23,6 +25,9 @@ pub struct Sound {
     pub volume: f32,
     #[serde(default)]
     pub hotkey: Option<String>,
+    /// Tile color as `#RRGGBB`, always set after `Config::sanitize`.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 fn one() -> f32 {
@@ -99,6 +104,11 @@ fn default_master() -> f32 {
     0.8
 }
 
+/// `#RRGGBB` with hex digits of either case.
+fn is_hex_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Clamps to 0..=1; a non-finite value (hand-edited file) becomes `fallback`.
 fn unit(v: f32, fallback: f32) -> f32 {
     if v.is_finite() {
@@ -130,6 +140,23 @@ impl Config {
         self.sounds.iter_mut().find(|s| s.id == id)
     }
 
+    /// Normalizes valid `#RRGGBB` colors to uppercase, then gives every sound without one the
+    /// least-used palette color so far, so existing libraries get distinct colors on first load.
+    fn assign_colors(&mut self) {
+        for s in &mut self.sounds {
+            s.color = match s.color.take() {
+                Some(c) if is_hex_color(&c) => Some(c.to_ascii_uppercase()),
+                _ => None,
+            };
+        }
+        let mut used: Vec<String> = self.sounds.iter().filter_map(|s| s.color.clone()).collect();
+        for s in self.sounds.iter_mut().filter(|s| s.color.is_none()) {
+            let next = next_color(&used.iter().map(String::as_str).collect::<Vec<_>>());
+            used.push(next.to_string());
+            s.color = Some(next.to_string());
+        }
+    }
+
     /// Repairs values a hand-edited or newer file may carry.
     fn sanitize(mut self) -> Self {
         if self.version > CONFIG_VERSION {
@@ -139,6 +166,7 @@ impl Config {
         for s in &mut self.sounds {
             s.volume = unit(s.volume, 1.0);
         }
+        self.assign_colors();
         self.devices.mic_gain =
             if self.devices.mic_gain.is_finite() { self.devices.mic_gain.clamp(0.0, MAX_MIC_GAIN) } else { 1.0 };
         self
@@ -211,6 +239,7 @@ pub fn save(path: &Path, cfg: &Config) -> io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use crate::palette::PALETTE;
 
     #[test]
     fn default_has_expected_values() {
@@ -247,6 +276,7 @@ mod tests {
             image: Some("a.png".into()),
             volume: 0.5,
             hotkey: Some("Ctrl+Shift+Digit1".into()),
+            color: Some("#FF595E".into()),
         });
         cfg.devices = Devices {
             speakers: Some("Speakers".into()),
@@ -355,10 +385,62 @@ mod tests {
         assert_eq!(load(&path).into_config().devices.mic_gain, 0.0);
     }
 
+    fn load_json(json: &str) -> Config {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, json).unwrap();
+        load(&path).into_config()
+    }
+
+    fn sounds_json(colors: &[Option<&str>]) -> String {
+        let items: Vec<String> = colors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match c {
+                Some(c) => format!(r#"{{"id":"s{i}","name":"S","file":"s.wav","color":"{c}"}}"#),
+                None => format!(r#"{{"id":"s{i}","name":"S","file":"s.wav"}}"#),
+            })
+            .collect();
+        format!(r#"{{"sounds":[{}]}}"#, items.join(","))
+    }
+
+    fn colors(c: &Config) -> Vec<&str> {
+        c.sounds.iter().map(|s| s.color.as_deref().unwrap()).collect()
+    }
+
+    #[test]
+    fn sounds_without_color_get_distinct_palette_colors_at_load() {
+        let c = load_json(&sounds_json(&[None; 10]));
+        let got = colors(&c);
+        assert_eq!(got, PALETTE.to_vec(), "palette order, each once");
+        let c = load_json(&sounds_json(&[None; 11]));
+        let got = colors(&c);
+        assert_eq!(&got[..10], &PALETTE[..]);
+        assert_eq!(got[10], PALETTE[0], "11th repeats the least used (earliest)");
+    }
+
+    #[test]
+    fn invalid_color_is_replaced_and_valid_lowercase_is_uppercased() {
+        let c = load_json(&sounds_json(&[Some("red"), Some("#12345"), Some("#GGGGGG"), Some("#abcdef"), Some("#F4A261")]));
+        let got = colors(&c);
+        assert_eq!(got[3], "#ABCDEF", "valid hex is kept, uppercased, even off-palette");
+        assert_eq!(got[4], "#F4A261");
+        for bad in &got[..3] {
+            assert!(PALETTE.contains(bad), "{bad} replaced by a palette color");
+        }
+        assert_eq!(&got[..3], &["#FF595E", "#FF924C", "#FFCA3A"]);
+    }
+
+    #[test]
+    fn assigned_colors_skip_ones_already_in_use() {
+        let c = load_json(&sounds_json(&[Some("#FF595E"), None, Some("#FF924C"), None]));
+        assert_eq!(colors(&c), ["#FF595E", "#FFCA3A", "#FF924C", "#8AC926"]);
+    }
+
     #[test]
     fn sound_lookup_by_id() {
         let mut cfg = Config::default();
-        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None });
+        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None });
         assert_eq!(cfg.sound("a").unwrap().name, "A");
         assert!(cfg.sound("zzz").is_none());
         cfg.sound_mut("a").unwrap().name = "B".into();

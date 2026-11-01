@@ -6,6 +6,8 @@ pub struct RemoteSound {
     pub name: String,
     pub volume: f32,
     pub has_image: bool,
+    /// Tile color as `#RRGGBB`.
+    pub color: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,12 +33,12 @@ mod tests {
         let m = ServerMsg::State {
             master_volume: 0.8,
             playing: vec!["u1".into()],
-            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: true }],
+            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: true, color: "#FF595E".into() }],
         };
         let json = serde_json::to_string(&m).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true}]}"#
+            r##"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true,"color":"#FF595E"}]}"##
         );
     }
 
