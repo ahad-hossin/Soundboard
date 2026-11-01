@@ -1,12 +1,24 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use rodio::buffer::SamplesBuffer;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+
+/// How long a cached stream for a named device is trusted before the device list is checked again.
+const REVALIDATE_AFTER: Duration = Duration::from_secs(2);
+
+/// Pure rate-limit decision: re-enumerate only when never validated or the last check is older than the interval.
+fn needs_revalidation(last: Option<Instant>, now: Instant) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.saturating_duration_since(t) > REVALIDATE_AFTER,
+    }
+}
 
 enum Cmd {
     Devices(Sender<Vec<DeviceInfo>>),
@@ -85,6 +97,8 @@ struct AudioThread {
     host: rodio::cpal::Host,
     streams: HashMap<DeviceTarget, (OutputStream, OutputStreamHandle)>,
     sinks: HashMap<SinkHandle, Sink>,
+    sink_targets: HashMap<SinkHandle, DeviceTarget>,
+    last_validated: HashMap<DeviceTarget, Instant>,
     next: u64,
 }
 
@@ -93,6 +107,8 @@ fn audio_thread(rx: Receiver<Cmd>) {
         host: rodio::cpal::default_host(),
         streams: HashMap::new(),
         sinks: HashMap::new(),
+        sink_targets: HashMap::new(),
+        last_validated: HashMap::new(),
         next: 1,
     };
     while let Ok(cmd) = rx.recv() {
@@ -104,7 +120,7 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 let _ = reply.send(st.play(&target, &buffer, gain));
             }
             Cmd::Stop(h) => {
-                if let Some(s) = st.sinks.remove(&h) {
+                if let Some(s) = st.remove_sink(h) {
                     s.stop();
                 }
             }
@@ -116,13 +132,15 @@ fn audio_thread(rx: Receiver<Cmd>) {
             Cmd::IsFinished(h, reply) => {
                 let done = st.sinks.get(&h).map(|s| s.empty()).unwrap_or(true);
                 if done {
-                    st.sinks.remove(&h);
+                    st.remove_sink(h);
                 }
                 let _ = reply.send(done);
             }
             Cmd::Reset => {
                 st.sinks.clear();
+                st.sink_targets.clear();
                 st.streams.clear();
+                st.last_validated.clear();
             }
         }
     }
@@ -158,12 +176,45 @@ impl AudioThread {
         }
     }
 
+    fn remove_sink(&mut self, h: SinkHandle) -> Option<Sink> {
+        self.sink_targets.remove(&h);
+        self.sinks.remove(&h)
+    }
+
+    /// Drop the stream for `target` and every sink created on it, so those voices report finished.
+    fn drop_stream(&mut self, target: &DeviceTarget) {
+        self.streams.remove(target);
+        self.last_validated.remove(target);
+        let dead: Vec<SinkHandle> =
+            self.sink_targets.iter().filter(|(_, t)| *t == target).map(|(h, _)| *h).collect();
+        for h in dead {
+            self.remove_sink(h);
+        }
+    }
+
     fn handle_for(&mut self, target: &DeviceTarget) -> Result<OutputStreamHandle, AudioError> {
-        if !self.streams.contains_key(target) {
+        if self.streams.contains_key(target) {
+            // cpal never tells us a stream died, so named devices are re-checked now and then.
+            if matches!(target, DeviceTarget::Named(_))
+                && needs_revalidation(self.last_validated.get(target).copied(), Instant::now())
+            {
+                match self.find_device(target) {
+                    Err(not_found @ AudioError::DeviceNotFound(_)) => {
+                        self.drop_stream(target);
+                        return Err(not_found);
+                    }
+                    // Enumeration trouble is not proof the device is gone; keep the stream.
+                    _ => {
+                        self.last_validated.insert(target.clone(), Instant::now());
+                    }
+                }
+            }
+        } else {
             let device = self.find_device(target)?;
             let (stream, handle) =
                 OutputStream::try_from_device(&device).map_err(|e| AudioError::Stream(e.to_string()))?;
             self.streams.insert(target.clone(), (stream, handle));
+            self.last_validated.insert(target.clone(), Instant::now());
         }
         Ok(self.streams[target].1.clone())
     }
@@ -174,7 +225,7 @@ impl AudioThread {
             Err(e) => {
                 // The stream may have died (device unplugged). Drop it so the next attempt reopens,
                 // and report DeviceNotFound if the device is really gone so the engine can fall back.
-                self.streams.remove(target);
+                self.drop_stream(target);
                 return match self.find_device(target) {
                     Err(not_found @ AudioError::DeviceNotFound(_)) => Err(not_found),
                     _ => Err(e),
@@ -186,6 +237,7 @@ impl AudioThread {
         let h = SinkHandle(self.next);
         self.next += 1;
         self.sinks.insert(h, sink);
+        self.sink_targets.insert(h, target.clone());
         Ok(h)
     }
 }
@@ -211,6 +263,16 @@ mod tests {
         assert!(!b.is_finished(h));
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(b.is_finished(h));
+    }
+
+    #[test]
+    fn revalidation_is_rate_limited() {
+        let now = Instant::now();
+        assert!(needs_revalidation(None, now));
+        assert!(!needs_revalidation(Some(now), now));
+        assert!(!needs_revalidation(Some(now), now + Duration::from_millis(1500)));
+        assert!(!needs_revalidation(Some(now), now + REVALIDATE_AFTER));
+        assert!(needs_revalidation(Some(now), now + REVALIDATE_AFTER + Duration::from_millis(1)));
     }
 
     #[test]
