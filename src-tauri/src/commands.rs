@@ -7,6 +7,7 @@ use soundboard_core::hotkeys::{self, Owner};
 use soundboard_core::library::Library;
 use soundboard_core::palette::is_palette_color;
 use soundboard_core::remote::auth;
+use tauri_plugin_autostart::ManagerExt;
 use tauri::{AppHandle, State};
 
 use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_warm, App, Ctx, UiState};
@@ -390,4 +391,33 @@ pub fn set_pin(pin: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Resu
 #[tauri::command]
 pub fn restart_remote(app: AppHandle) {
     remote_glue::start(&app);
+}
+
+/// Saves the three Startup options and makes the Windows Run key entry match `autostart`.
+/// A registry failure is reported, but the other two options are still saved.
+#[tauri::command]
+pub fn set_startup(
+    autostart: bool,
+    start_minimized: bool,
+    close_to_tray: bool,
+    app: AppHandle,
+    ctx: State<'_, Ctx>,
+) -> Result<(), String> {
+    let launcher = app.autolaunch();
+    let result = if autostart { launcher.enable() } else { launcher.disable() };
+    // Keep the stored flag equal to the real registration so the next launch does not retry.
+    let registered = match &result {
+        Ok(()) => autostart,
+        Err(_) => launcher.is_enabled().unwrap_or(!autostart),
+    };
+    {
+        let mut a = lock(&ctx.shared);
+        a.config.startup.start_minimized = start_minimized;
+        a.config.startup.close_to_tray = close_to_tray;
+        a.config.startup.autostart = registered;
+        a.mark_dirty();
+        flush_now(&mut a);
+    }
+    emit_state(&app, &ctx);
+    result.map_err(|e| format!("Could not change the Windows startup entry: {e}"))
 }

@@ -10,7 +10,10 @@ use soundboard_core::audio::{Engine, RodioBackend};
 use soundboard_core::config::{self, LoadOutcome};
 use soundboard_core::library::Library;
 use soundboard_core::remote::Hub;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
 
 use state::{emit_state, emit_toast, lock, App, Ctx, Shared, CACHE_BYTES};
 
@@ -19,6 +22,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![STARTUP_ARG]),
+        ))
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let to_tray = window
+                    .app_handle()
+                    .try_state::<Ctx>()
+                    .is_some_and(|ctx| lock(&ctx.shared).config.startup.close_to_tray);
+                if to_tray {
+                    api.prevent_close();
+                    if let Err(e) = window.hide() {
+                        log::warn!("hiding the window to the tray failed: {e}");
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let library = Library::open(&data_dir)?;
@@ -54,6 +75,19 @@ pub fn run() {
             state::spawn_warm(shared, None);
 
             let handle = app.handle().clone();
+            sync_autostart(&handle);
+            let tray_ok = match build_tray(&handle) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!("tray icon failed: {e}");
+                    false
+                }
+            };
+            // The window is created hidden (tauri.conf.json), so a minimized start never flashes.
+            // Without a tray icon there would be no way back to a hidden window, so it shows anyway.
+            if !(tray_ok && start_hidden(&handle)) {
+                show_main_window(&handle);
+            }
             {
                 let h = handle.clone();
                 app.state::<Ctx>().hub.set_on_clients_changed(Box::new(move || {
@@ -90,6 +124,7 @@ pub fn run() {
             commands::set_remote_port,
             commands::set_pin,
             commands::restart_remote,
+            commands::set_startup,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -102,6 +137,68 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Argument the autostart entry launches the app with.
+const STARTUP_ARG: &str = "--minimized";
+
+/// True when the main window should stay hidden at launch: the option is on, or the app was
+/// started by the Windows startup entry.
+fn start_hidden(app: &AppHandle) -> bool {
+    let option = lock(&app.state::<Ctx>().shared).config.startup.start_minimized;
+    option || std::env::args().any(|a| a == STARTUP_ARG)
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Makes the Windows Run key entry match the saved setting. A failure is logged, never fatal.
+fn sync_autostart(app: &AppHandle) {
+    let want = lock(&app.state::<Ctx>().shared).config.startup.autostart;
+    let launcher = app.autolaunch();
+    if launcher.is_enabled().unwrap_or(false) != want {
+        let result = if want { launcher.enable() } else { launcher.disable() };
+        if let Err(e) = result {
+            log::warn!("could not sync the Windows startup entry: {e}");
+        }
+    }
+}
+
+/// Tray icon with the app icon, a Show / Stop All / Quit menu, and left click to show the window.
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let stop_all = MenuItem::with_id(app, "stop_all", "Stop All", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &stop_all, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Soundboard")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main_window(app),
+            "stop_all" => {
+                let ctx = app.state::<Ctx>();
+                lock(&ctx.shared).engine.stop_all();
+                emit_state(app, &ctx);
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 /// Every 100 ms drop finished sinks, write pending config changes, restart a mic passthrough

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use soundboard_core::audio::decode::decode_file;
 use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
-use soundboard_core::config::{self, Config, Sound};
+use soundboard_core::config::{self, Config, Sound, Startup};
 use soundboard_core::library::Library;
 use soundboard_core::palette::PALETTE;
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
@@ -108,6 +108,7 @@ pub struct UiState {
     pub master_volume: f32,
     pub devices: UiDevices,
     pub stop_all_hotkey: String,
+    pub startup: Startup,
     pub remote: UiRemote,
     pub sounds: Vec<UiSound>,
     pub playing: Vec<String>,
@@ -266,6 +267,7 @@ impl App {
                 available_inputs: self.available_inputs.clone(),
             },
             stop_all_hotkey: self.config.stop_all_hotkey.clone(),
+            startup: self.config.startup.clone(),
             remote: UiRemote {
                 port: self.remote_port,
                 error: self.remote_error.clone(),
