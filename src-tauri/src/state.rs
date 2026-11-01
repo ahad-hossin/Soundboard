@@ -245,7 +245,7 @@ impl App {
         }
         let outcome = self
             .engine
-            .play_file(&sound.id, sound.volume, &path)
+            .play_file(&sound.id, sound.volume, &path, sound.trim)
             .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))?;
         // The file is evidently there (again); clear a stale missing flag.
         self.files.entry(sound.id.clone()).or_default().0 = false;
@@ -294,7 +294,7 @@ impl App {
                         image_path: self.library.image_path(s).map(|p| p.to_string_lossy().into_owned()),
                         image_rev,
                         missing_file,
-                        duration_secs: self.engine.cached_duration(&s.id),
+                        duration_secs: self.engine.cached_duration(&s.id, s.trim),
                         play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                     }
                 })
@@ -318,7 +318,7 @@ impl App {
                     volume: s.volume,
                     has_image: s.image.is_some(),
                     color: tile_color(s),
-                    duration_secs: self.engine.cached_duration(&s.id),
+                    duration_secs: self.engine.cached_duration(&s.id, s.trim),
                     play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                 })
                 .collect(),

@@ -28,6 +28,29 @@ pub struct Sound {
     /// Tile color as `#RRGGBB`, always set after `Config::sanitize`.
     #[serde(default)]
     pub color: Option<String>,
+    /// Non-destructive crop: only this range plays. None plays the whole file.
+    #[serde(default)]
+    pub trim: Option<Trim>,
+}
+
+/// Shortest range a trim may keep, in seconds.
+pub const MIN_TRIM_SECS: f32 = 0.05;
+
+/// Play range of a sound in seconds from the start of its file; `end_secs` is exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Trim {
+    pub start_secs: f32,
+    pub end_secs: f32,
+}
+
+impl Trim {
+    /// Finite, non-negative and at least `MIN_TRIM_SECS` long. Says nothing about the file length.
+    pub fn is_valid(&self) -> bool {
+        self.start_secs.is_finite()
+            && self.end_secs.is_finite()
+            && self.start_secs >= 0.0
+            && self.end_secs > self.start_secs + MIN_TRIM_SECS
+    }
 }
 
 fn one() -> f32 {
@@ -191,6 +214,7 @@ impl Config {
         self.master_volume = unit(self.master_volume, default_master());
         for s in &mut self.sounds {
             s.volume = unit(s.volume, 1.0);
+            s.trim = s.trim.filter(Trim::is_valid);
         }
         self.assign_colors();
         self.devices.mic_gain =
@@ -325,6 +349,7 @@ mod tests {
             volume: 0.5,
             hotkey: Some("Ctrl+Shift+Digit1".into()),
             color: Some("#FF595E".into()),
+            trim: Some(Trim { start_secs: 0.25, end_secs: 1.5 }),
         });
         cfg.devices = Devices {
             speakers: Some("Speakers".into()),
@@ -377,6 +402,7 @@ mod tests {
         assert_eq!(cfg.sounds[0].volume, 1.0);
         assert_eq!(cfg.sounds[0].hotkey, None);
         assert_eq!(cfg.sounds[0].image, None);
+        assert_eq!(cfg.sounds[0].trim, None);
         assert_eq!(cfg.remote.port, DEFAULT_PORT);
         assert_eq!(cfg.stop_all_hotkey, DEFAULT_STOP_ALL_HOTKEY);
     }
@@ -488,10 +514,33 @@ mod tests {
     #[test]
     fn sound_lookup_by_id() {
         let mut cfg = Config::default();
-        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None });
+        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None });
         assert_eq!(cfg.sound("a").unwrap().name, "A");
         assert!(cfg.sound("zzz").is_none());
         cfg.sound_mut("a").unwrap().name = "B".into();
         assert_eq!(cfg.sound("a").unwrap().name, "B");
+    }
+
+    #[test]
+    fn invalid_trims_are_dropped_at_load() {
+        let json = r#"{"sounds":[
+            {"id":"ok","name":"S","file":"s.wav","trim":{"start_secs":0.5,"end_secs":2.0}},
+            {"id":"neg","name":"S","file":"s.wav","trim":{"start_secs":-0.1,"end_secs":2.0}},
+            {"id":"short","name":"S","file":"s.wav","trim":{"start_secs":1.0,"end_secs":1.05}},
+            {"id":"backwards","name":"S","file":"s.wav","trim":{"start_secs":2.0,"end_secs":1.0}},
+            {"id":"huge","name":"S","file":"s.wav","trim":{"start_secs":0.0,"end_secs":1e40}},
+            {"id":"null","name":"S","file":"s.wav","trim":null}]}"#;
+        let c = load_json(json);
+        let trims: Vec<Option<Trim>> = c.sounds.iter().map(|s| s.trim).collect();
+        assert_eq!(trims[0], Some(Trim { start_secs: 0.5, end_secs: 2.0 }));
+        assert!(trims[1..].iter().all(Option::is_none), "{trims:?}");
+    }
+
+    #[test]
+    fn trim_validity_needs_finite_ordered_and_min_length() {
+        assert!(Trim { start_secs: 0.0, end_secs: 0.051 }.is_valid());
+        assert!(!Trim { start_secs: 0.0, end_secs: 0.05 }.is_valid());
+        assert!(!Trim { start_secs: f32::NAN, end_secs: 1.0 }.is_valid());
+        assert!(!Trim { start_secs: 0.0, end_secs: f32::INFINITY }.is_valid());
     }
 }

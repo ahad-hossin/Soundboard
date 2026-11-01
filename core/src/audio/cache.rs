@@ -43,6 +43,11 @@ impl BufferCache {
         }
     }
 
+    /// A cached buffer without touching its LRU position.
+    pub fn peek(&self, id: &str) -> Option<&DecodedBuffer> {
+        self.entries.get(id)
+    }
+
     /// Duration of a cached clip without touching its LRU position.
     pub fn duration_secs(&self, id: &str) -> Option<f32> {
         self.entries.get(id).map(|b| b.duration_secs())
@@ -133,6 +138,16 @@ mod tests {
         assert!(!c.contains("b"));
         assert!(c.has_room_for(8));
         assert!(!c.has_room_for(9));
+    }
+
+    #[test]
+    fn peek_does_not_refresh_lru_position() {
+        let mut c = BufferCache::new(16);
+        c.insert("a", buf(2));
+        c.insert("b", buf(2));
+        assert_eq!(c.peek("a").unwrap().samples.len(), 2);
+        c.insert("c", buf(2));
+        assert!(c.peek("a").is_none(), "a stayed the oldest and was evicted");
     }
 
     #[test]

@@ -1,12 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
 use super::cache::BufferCache;
 use super::decode::decode_file;
-use crate::config::MAX_MIC_GAIN;
+use super::trim::{apply_trim, trimmed_duration};
+use crate::config::{Trim, MAX_MIC_GAIN};
 
 pub const TEST_TONE_ID: &str = "__test_tone__";
+/// Hidden sound id of the trim editor's "Play selection"; never listed in `playing()`.
+pub const PREVIEW_ID: &str = "__preview__";
+
+/// Ids that are not library sounds and never show as playing.
+fn is_hidden(sound_id: &str) -> bool {
+    sound_id == TEST_TONE_ID || sound_id == PREVIEW_ID
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outputs {
@@ -63,7 +71,11 @@ struct Active {
 
 pub struct Engine<B: AudioBackend> {
     backend: B,
+    /// Full decoded files, so the trim editor can always show the whole waveform.
     cache: BufferCache,
+    /// Per sound id: the trim a slice was cut for, and that slice. Only kept while the full
+    /// buffer is cached, so it never outgrows the cache by more than the trimmed sounds.
+    trimmed: HashMap<String, (Trim, DecodedBuffer)>,
     master: f32,
     outputs: Outputs,
     active: Vec<Active>,
@@ -89,6 +101,7 @@ impl<B: AudioBackend> Engine<B> {
         Self {
             backend,
             cache: BufferCache::new(cache_bytes),
+            trimmed: HashMap::new(),
             master: master.clamp(0.0, 1.0),
             outputs,
             active: Vec::new(),
@@ -227,25 +240,81 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
-    pub fn play_file(&mut self, sound_id: &str, sound_volume: f32, path: &Path) -> Result<PlayOutcome, AudioError> {
-        let buffer = match self.cache.get(sound_id) {
-            Some(b) => b,
-            None => {
-                let b = decode_file(path)?;
-                self.cache.insert(sound_id, b.clone());
-                b
-            }
-        };
+    /// Plays the file, or only its `trim` range. The full decode is cached; the trimmed slice is
+    /// cut once per trim and reused.
+    pub fn play_file(&mut self, sound_id: &str, sound_volume: f32, path: &Path, trim: Option<Trim>) -> Result<PlayOutcome, AudioError> {
+        let full = self.full_buffer(sound_id, path)?;
+        let buffer = self.trimmed_buffer(sound_id, &full, trim);
         self.play_buffer(sound_id, sound_volume, &buffer)
+    }
+
+    /// The full decoded file from the cache, or decoded now and cached (may evict others).
+    fn full_buffer(&mut self, sound_id: &str, path: &Path) -> Result<DecodedBuffer, AudioError> {
+        if let Some(b) = self.cache.get(sound_id) {
+            return Ok(b);
+        }
+        let b = decode_file(path)?;
+        self.cache.insert(sound_id, b.clone());
+        Ok(b)
+    }
+
+    fn trimmed_buffer(&mut self, sound_id: &str, full: &DecodedBuffer, trim: Option<Trim>) -> DecodedBuffer {
+        // Drop slices whose full buffer was evicted, so slices never pile up past the cache.
+        let cache = &self.cache;
+        self.trimmed.retain(|id, _| cache.contains(id));
+        let Some(t) = trim else {
+            self.trimmed.remove(sound_id);
+            return full.clone();
+        };
+        if let Some((cut_for, slice)) = self.trimmed.get(sound_id) {
+            if *cut_for == t {
+                return slice.clone();
+            }
+        }
+        let slice = apply_trim(full, Some(t));
+        self.trimmed.insert(sound_id.to_string(), (t, slice.clone()));
+        slice
+    }
+
+    /// Forgets the cut slice when the trim changed; the next play slices the cached decode again.
+    pub fn set_trim(&mut self, sound_id: &str, trim: Option<Trim>) {
+        if self.trimmed.get(sound_id).map(|(cut_for, _)| *cut_for) != trim {
+            self.trimmed.remove(sound_id);
+        }
     }
 
     pub fn is_cached(&self, sound_id: &str) -> bool {
         self.cache.contains(sound_id)
     }
 
-    /// Length of the cached decode in seconds, or None when the sound is not cached.
-    pub fn cached_duration(&self, sound_id: &str) -> Option<f32> {
-        self.cache.duration_secs(sound_id)
+    /// Length in seconds of what plays (the `trim` range, or the whole file when None), or None
+    /// when the sound is not cached.
+    pub fn cached_duration(&self, sound_id: &str, trim: Option<Trim>) -> Option<f32> {
+        self.cache.peek(sound_id).map(|b| trimmed_duration(b, trim))
+    }
+
+    /// The cached full decode, if any (refreshes its LRU position).
+    pub fn cached_buffer(&mut self, sound_id: &str) -> Option<DecodedBuffer> {
+        self.cache.get(sound_id)
+    }
+
+    /// Caches a buffer decoded elsewhere because it is about to be used (the trim editor);
+    /// unlike `insert_cached` this may evict older entries.
+    pub fn cache_buffer(&mut self, sound_id: &str, buffer: DecodedBuffer) {
+        self.trimmed.remove(sound_id);
+        self.cache.insert(sound_id, buffer);
+    }
+
+    /// Plays `trim` of the sound under the hidden `PREVIEW_ID`, replacing any running preview.
+    pub fn preview(&mut self, sound_id: &str, path: &Path, trim: Trim, sound_volume: f32) -> Result<PlayOutcome, AudioError> {
+        self.stop_preview();
+        let full = self.full_buffer(sound_id, path)?;
+        let slice = apply_trim(&full, Some(trim));
+        self.play_buffer(PREVIEW_ID, sound_volume, &slice)
+    }
+
+    pub fn stop_preview(&mut self) {
+        self.stop_sound(PREVIEW_ID);
     }
 
     /// Adds a buffer decoded elsewhere (outside any lock) ahead of the first play.
@@ -347,12 +416,13 @@ impl<B: AudioBackend> Engine<B> {
         before != self.playing()
     }
 
-    /// Unique sound ids with at least one active sink, in start order. Test tones excluded.
+    /// Unique sound ids with at least one active sink, in start order. Test tones and the trim
+    /// preview excluded.
     pub fn playing(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         self.active
             .iter()
-            .filter(|a| a.sound_id != TEST_TONE_ID)
+            .filter(|a| !is_hidden(&a.sound_id))
             .filter(|a| seen.insert(a.sound_id.clone()))
             .map(|a| a.sound_id.clone())
             .collect()
@@ -360,6 +430,7 @@ impl<B: AudioBackend> Engine<B> {
 
     pub fn invalidate(&mut self, sound_id: &str) {
         self.cache.remove(sound_id);
+        self.trimmed.remove(sound_id);
     }
 
     pub fn cached(&self) -> usize {
@@ -393,6 +464,7 @@ mod tests {
     use super::*;
     use crate::audio::fake_backend::{Call, FakeBackend};
     use crate::test_util::write_test_wav;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn both() -> Outputs {
@@ -543,8 +615,8 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 500);
         let mut e = engine(both(), 1.0);
-        e.play_file("a", 1.0, &p).unwrap();
-        e.play_file("a", 1.0, &p).unwrap();
+        e.play_file("a", 1.0, &p, None).unwrap();
+        e.play_file("a", 1.0, &p, None).unwrap();
         assert_eq!(e.cached(), 1);
         e.invalidate("a");
         assert_eq!(e.cached(), 0);
@@ -562,7 +634,7 @@ mod tests {
         assert_eq!(e.cached(), 1);
         assert!(e.backend().calls().is_empty(), "no Play call");
         // Path no longer needed: play hits the cache instead of decoding.
-        e.play_file("a", 1.0, Path::new("Z:/gone.wav")).unwrap();
+        e.play_file("a", 1.0, Path::new("Z:/gone.wav"), None).unwrap();
         assert_eq!(e.cached(), 1);
     }
 
@@ -572,13 +644,13 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 500);
         let mut e = engine(both(), 1.0);
-        assert_eq!(e.cached_duration("a"), None);
+        assert_eq!(e.cached_duration("a", None), None);
         let buf = decode_file(&p).unwrap();
         let expected = buf.duration_secs();
         assert!(e.insert_cached("a", buf));
-        assert_eq!(e.cached_duration("a"), Some(expected));
+        assert_eq!(e.cached_duration("a", None), Some(expected));
         e.invalidate("a");
-        assert_eq!(e.cached_duration("a"), None);
+        assert_eq!(e.cached_duration("a", None), None);
     }
 
     #[test]
@@ -598,7 +670,7 @@ mod tests {
     #[test]
     fn play_file_missing_is_io_error() {
         let mut e = engine(both(), 1.0);
-        assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/nope.wav")), Err(AudioError::Io(_))));
+        assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/nope.wav"), None), Err(AudioError::Io(_))));
     }
 
     #[test]
@@ -840,5 +912,91 @@ mod tests {
         let s = sine(440.0, 0.4, 44100);
         assert_eq!(s.samples.len(), 17640);
         assert_eq!(s.channels, 1);
+    }
+
+    fn trim(start_secs: f32, end_secs: f32) -> Option<Trim> {
+        Some(Trim { start_secs, end_secs })
+    }
+
+    fn played_lengths(e: &Engine<FakeBackend>) -> Vec<usize> {
+        e.backend()
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Play { samples, .. } => Some(samples),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn speakers_only() -> Outputs {
+        Outputs { speakers: Some("Speakers".into()), ..Outputs::default() }
+    }
+
+    #[test]
+    fn play_file_plays_only_the_trimmed_range_and_keeps_the_full_decode() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100); // 1 s stereo
+        let mut e = engine(speakers_only(), 1.0);
+        e.play_file("a", 1.0, &p, trim(0.25, 0.75)).unwrap();
+        assert_eq!(played_lengths(&e), vec![2 * 22050]);
+        assert_eq!(e.cached_buffer("a").unwrap().samples.len(), 2 * 44100, "cache holds the whole file");
+        assert!((e.cached_duration("a", trim(0.25, 0.75)).unwrap() - 0.5).abs() < 1e-4);
+        assert!((e.cached_duration("a", None).unwrap() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn trimmed_slice_is_reused_until_the_trim_changes() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let mut e = engine(speakers_only(), 1.0);
+        e.play_file("a", 1.0, &p, trim(0.0, 0.5)).unwrap();
+        let first = e.trimmed.get("a").unwrap().1.samples.clone();
+        e.play_file("a", 1.0, &p, trim(0.0, 0.5)).unwrap();
+        assert!(Arc::ptr_eq(&first, &e.trimmed.get("a").unwrap().1.samples), "no second slice");
+        e.set_trim("a", trim(0.0, 0.5));
+        assert!(e.trimmed.contains_key("a"), "same trim keeps the slice");
+        e.set_trim("a", trim(0.1, 0.5));
+        assert!(!e.trimmed.contains_key("a"), "changed trim drops it");
+        e.play_file("a", 1.0, &p, trim(0.1, 0.5)).unwrap();
+        e.play_file("a", 1.0, &p, None).unwrap();
+        assert!(!e.trimmed.contains_key("a"), "untrimmed play drops a stale slice");
+        assert_eq!(played_lengths(&e), vec![2 * 22050, 2 * 22050, 2 * 17640, 2 * 44100]);
+    }
+
+    #[test]
+    fn invalidate_clears_full_and_trimmed() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 4410);
+        let mut e = engine(speakers_only(), 1.0);
+        e.play_file("a", 1.0, &p, trim(0.0, 0.06)).unwrap();
+        e.invalidate("a");
+        assert!(!e.is_cached("a"));
+        assert!(e.trimmed.is_empty());
+        assert_eq!(e.cached_duration("a", trim(0.0, 0.06)), None);
+    }
+
+    #[test]
+    fn preview_plays_hidden_and_replaces_the_previous_preview() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let mut e = engine(speakers_only(), 0.5);
+        let t = Trim { start_secs: 0.5, end_secs: 1.0 };
+        e.preview("a", &p, t, 0.8).unwrap();
+        assert!(e.playing().is_empty(), "preview is not a playing sound");
+        let first = e.backend().handles();
+        e.play_file("a", 1.0, &p, None).unwrap();
+        e.preview("a", &p, t, 0.8).unwrap();
+        let calls = e.backend().calls();
+        assert!(calls.contains(&Call::Stop(first[0])), "second preview stops the first");
+        assert_eq!(e.playing(), vec!["a".to_string()], "the real play keeps going");
+        assert_eq!(played_lengths(&e), vec![2 * 22050, 2 * 44100, 2 * 22050]);
+        e.stop_preview();
+        assert_eq!(e.playing(), vec!["a".to_string()]);
+        assert_eq!(e.backend().calls().iter().filter(|c| matches!(c, Call::Stop(_))).count(), 2);
     }
 }
