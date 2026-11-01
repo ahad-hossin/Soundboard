@@ -4,7 +4,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
-use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend, Warm};
+use soundboard_core::audio::decode::decode_file;
+use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
 use soundboard_core::config::{self, Config};
 use soundboard_core::library::Library;
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
@@ -134,6 +135,8 @@ impl App {
         }
         config::save(&self.library.config_path(), &self.config)?;
         self.dirty = false;
+        // Any successful write (reaper, immediate or on exit) re-arms the failure toast.
+        self.save_failed_reported = false;
         Ok(())
     }
 
@@ -169,6 +172,8 @@ impl App {
             .engine
             .play_file(&sound.id, sound.volume, &path)
             .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))?;
+        // The file is evidently there (again); clear a stale missing flag.
+        self.files.entry(sound.id.clone()).or_default().0 = false;
         let mut toasts = Vec::new();
         for dev in outcome.fallbacks {
             if self.warned_devices.insert(dev.clone()) {
@@ -261,20 +266,34 @@ pub fn play_and_report(app: &AppHandle, id: &str) {
 }
 
 /// Decodes sounds into the engine cache in the background so the first play is instant.
-/// Takes the lock once per sound. `None` warms every sound in config order.
+/// The decode runs outside the App lock; the lock is taken only to look up the path and to
+/// insert the result. `None` warms every sound in config order.
 pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
     tauri::async_runtime::spawn_blocking(move || {
         let ids = ids.unwrap_or_else(|| lock(&shared).config.sounds.iter().map(|s| s.id.clone()).collect());
         for id in ids {
-            let mut a = lock(&shared);
-            let Some(path) = a.config.sound(&id).map(|s| a.library.sound_path(s)) else {
-                continue;
+            let path = {
+                let a = lock(&shared);
+                match a.config.sound(&id) {
+                    Some(s) if !a.engine.is_cached(&id) => a.library.sound_path(s),
+                    _ => continue,
+                }
             };
-            match a.engine.warm(&id, &path) {
-                Ok(Warm::NoRoom) => break,
-                Ok(_) => {}
-                Err(e) => log::debug!("warming {id} failed: {e}"),
+            let buffer = match decode_file(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::debug!("warming {id} failed: {e}");
+                    continue;
+                }
+            };
+            {
+                let mut a = lock(&shared);
+                // The sound may have been deleted or played (and cached) while decoding.
+                if a.config.sound(&id).is_some() && !a.engine.is_cached(&id) && !a.engine.insert_cached(&id, buffer) {
+                    break; // cache full; warming never evicts
+                }
             }
+            std::thread::yield_now();
         }
     });
 }

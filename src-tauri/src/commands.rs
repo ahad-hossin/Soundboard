@@ -276,6 +276,7 @@ pub fn refresh_devices(app: AppHandle, ctx: State<'_, Ctx>) {
         let mut a = lock(&ctx.shared);
         a.available_devices = a.engine.refresh_devices();
         a.addresses = addresses;
+        a.refresh_files();
     }
     emit_state(&app, &ctx);
 }

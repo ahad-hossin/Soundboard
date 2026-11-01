@@ -6,7 +6,7 @@ pub mod fake_backend;
 
 pub use backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
 pub use cache::BufferCache;
-pub use engine::{sine, Engine, Outputs, PlayOutcome, Warm, TEST_TONE_ID};
+pub use engine::{sine, Engine, Outputs, PlayOutcome, TEST_TONE_ID};
 pub use fake_backend::FakeBackend;
 pub mod rodio_backend;
 pub use rodio_backend::RodioBackend;

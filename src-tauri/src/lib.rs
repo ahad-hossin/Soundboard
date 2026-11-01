@@ -107,14 +107,8 @@ fn spawn_reaper(app: AppHandle) {
                 let ctx = app.state::<Ctx>();
                 let mut a = lock(&ctx.shared);
                 let changed = a.engine.reap();
-                let was_dirty = a.dirty;
                 let save_error = match a.flush() {
-                    Ok(()) => {
-                        if was_dirty {
-                            a.save_failed_reported = false;
-                        }
-                        None
-                    }
+                    Ok(()) => None,
                     Err(e) if !a.save_failed_reported => {
                         log::error!("config save failed: {e}");
                         a.save_failed_reported = true;

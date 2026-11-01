@@ -27,16 +27,6 @@ impl Outputs {
     }
 }
 
-/// Result of `Engine::warm`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Warm {
-    /// Decoded and added to the cache.
-    Cached,
-    /// Already in the cache; nothing decoded.
-    AlreadyCached,
-    /// The cache is full; warming never evicts, so the buffer was dropped.
-    NoRoom,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayOutcome {
@@ -142,17 +132,18 @@ impl<B: AudioBackend> Engine<B> {
         self.play_buffer(sound_id, sound_volume, &buffer)
     }
 
-    /// Decodes `path` into the cache ahead of the first play, without playing anything.
-    pub fn warm(&mut self, sound_id: &str, path: &Path) -> Result<Warm, AudioError> {
-        if self.cache.contains(sound_id) {
-            return Ok(Warm::AlreadyCached);
+    pub fn is_cached(&self, sound_id: &str) -> bool {
+        self.cache.contains(sound_id)
+    }
+
+    /// Adds a buffer decoded elsewhere (outside any lock) ahead of the first play.
+    /// Never evicts: returns false and drops the buffer when the cache has no room for it.
+    pub fn insert_cached(&mut self, sound_id: &str, buffer: DecodedBuffer) -> bool {
+        if !self.cache.is_empty() && !self.cache.has_room_for(buffer.byte_len()) {
+            return false;
         }
-        let b = decode_file(path)?;
-        if !self.cache.is_empty() && !self.cache.has_room_for(b.byte_len()) {
-            return Ok(Warm::NoRoom);
-        }
-        self.cache.insert(sound_id, b);
-        Ok(Warm::Cached)
+        self.cache.insert(sound_id, buffer);
+        true
     }
 
     pub fn play_buffer(&mut self, sound_id: &str, sound_volume: f32, buffer: &DecodedBuffer) -> Result<PlayOutcome, AudioError> {
@@ -430,30 +421,33 @@ mod tests {
     }
 
     #[test]
-    fn warm_decodes_into_cache_without_playing() {
+    fn insert_cached_fills_cache_without_playing_and_play_uses_it() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 500);
         let mut e = engine(both(), 1.0);
-        assert_eq!(e.warm("a", &p).unwrap(), Warm::Cached);
+        assert!(!e.is_cached("a"));
+        assert!(e.insert_cached("a", decode_file(&p).unwrap()));
+        assert!(e.is_cached("a"));
         assert_eq!(e.cached(), 1);
-        assert_eq!(e.warm("a", &p).unwrap(), Warm::AlreadyCached);
         assert!(e.backend().calls().is_empty(), "no Play call");
-        e.play_file("a", 1.0, &p).unwrap();
+        // Path no longer needed: play hits the cache instead of decoding.
+        e.play_file("a", 1.0, Path::new("Z:/gone.wav")).unwrap();
         assert_eq!(e.cached(), 1);
     }
 
     #[test]
-    fn warm_never_evicts() {
+    fn insert_cached_never_evicts() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 500);
+        let buf = decode_file(&p).unwrap();
         // Room for exactly one decoded clip.
-        let bytes = decode_file(&p).unwrap().byte_len();
-        let mut e = Engine::new(FakeBackend::new(&["Speakers"]), both(), 1.0, bytes);
-        assert_eq!(e.warm("a", &p).unwrap(), Warm::Cached);
-        assert_eq!(e.warm("b", &p).unwrap(), Warm::NoRoom);
-        assert_eq!(e.cached(), 1);
+        let mut e = Engine::new(FakeBackend::new(&["Speakers"]), both(), 1.0, buf.byte_len());
+        assert!(e.insert_cached("a", buf.clone()));
+        assert!(!e.insert_cached("b", buf));
+        assert!(e.is_cached("a"));
+        assert!(!e.is_cached("b"));
     }
 
     #[test]
