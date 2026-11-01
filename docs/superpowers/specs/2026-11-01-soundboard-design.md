@@ -327,6 +327,7 @@ Unknown or malformed messages are ignored and logged.
   Tapping vibrates 10 ms where supported.
 - Long-press a tile to open a volume sheet for that sound.
 - A Rotate button switches to landscape; uses the Screen Orientation API when available, otherwise a CSS rotation.
+- A Full button toggles browser full screen (Fullscreen API); hidden when the page runs as an installed home-screen app, and on iPhone Safari it shows a hint to add the page to the home screen instead.
 - On load the page calls `GET /auth/status`; if a PIN is required and the
   stored token is not valid it shows a PIN entry screen with a numeric keypad,
   otherwise it opens the WebSocket. On success it stores the token in
