@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use soundboard_core::audio::DeviceTarget;
-use soundboard_core::config::{self, Devices};
+use serde::Serialize;
+use soundboard_core::audio::decode::decode_file;
+use soundboard_core::audio::{waveform, DecodedBuffer, DeviceTarget};
+use soundboard_core::config::{self, Devices, Trim, MIN_TRIM_SECS};
 use soundboard_core::hotkeys::{self, Owner};
 use soundboard_core::library::Library;
 use soundboard_core::palette::is_palette_color;
@@ -93,9 +95,17 @@ pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, C
     Ok(())
 }
 
-/// Imports each path; returns one message per rejected file.
+#[derive(Serialize)]
+pub struct AddOutcome {
+    /// One message per rejected file.
+    pub rejected: Vec<String>,
+    /// Ids of the sounds that were added, in import order.
+    pub added_ids: Vec<String>,
+}
+
+/// Imports each path; reports the rejected files and the new sound ids.
 #[tauri::command]
-pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<Vec<String>, String> {
+pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<AddOutcome, String> {
     // Short lock just to learn where the library lives; the heavy import runs unlocked.
     // The current colors come along so new sounds get the least-used ones.
     let (root, mut used_colors) = {
@@ -124,18 +134,130 @@ pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>)
     })
     .await
     .map_err(|e| format!("Importing sounds failed: {e}"))?;
+    let added_ids: Vec<String> = imported.iter().map(|s| s.id.clone()).collect();
     if !imported.is_empty() {
-        let ids: Vec<String> = imported.iter().map(|s| s.id.clone()).collect();
         {
             let mut a = lock(&ctx.shared);
             a.config.sounds.extend(imported);
             a.mark_dirty();
             a.refresh_files();
         }
-        spawn_warm(ctx.shared.clone(), Some(ids));
+        spawn_warm(ctx.shared.clone(), Some(added_ids.clone()));
     }
     emit_state(&app, &ctx);
-    Ok(rejected)
+    Ok(AddOutcome { rejected, added_ids })
+}
+
+/// Bars the trim editor draws across the whole file.
+const WAVEFORM_BUCKETS: usize = 600;
+
+#[derive(Serialize)]
+pub struct Waveform {
+    /// Length of the whole file, ignoring any trim.
+    pub duration_secs: f32,
+    pub peaks: Vec<f32>,
+    pub trim: Option<Trim>,
+}
+
+/// The sound's full decode and current trim. Uses the cache, or decodes outside the App lock
+/// and caches the result for the preview and the next play.
+async fn full_buffer(ctx: &Ctx, id: &str) -> Result<(DecodedBuffer, Option<Trim>), String> {
+    let (path, name, trim, cached) = {
+        let mut a = lock(&ctx.shared);
+        let sound = a.config.sound(id).cloned().ok_or("That sound no longer exists")?;
+        (a.library.sound_path(&sound), sound.name, sound.trim, a.engine.cached_buffer(id))
+    };
+    if let Some(buffer) = cached {
+        return Ok((buffer, trim));
+    }
+    let buffer = tauri::async_runtime::spawn_blocking(move || decode_file(&path))
+        .await
+        .map_err(|e| format!("Reading \"{name}\" failed: {e}"))?
+        .map_err(|e| format!("Could not read \"{name}\": {e}"))?;
+    {
+        let mut a = lock(&ctx.shared);
+        // The sound may have been deleted or played (and cached) while decoding.
+        if a.config.sound(id).is_some() && !a.engine.is_cached(id) {
+            a.engine.cache_buffer(id, buffer.clone());
+        }
+    }
+    Ok((buffer, trim))
+}
+
+/// Peaks of the whole file for the trim editor, with its length and current trim.
+#[tauri::command]
+pub async fn get_waveform(id: String, ctx: State<'_, Ctx>) -> Result<Waveform, String> {
+    let (buffer, trim) = full_buffer(&ctx, &id).await?;
+    tauri::async_runtime::spawn_blocking(move || Waveform {
+        duration_secs: buffer.duration_secs(),
+        peaks: waveform(&buffer, WAVEFORM_BUCKETS),
+        trim,
+    })
+    .await
+    .map_err(|e| format!("Drawing the waveform failed: {e}"))
+}
+
+/// Why `trim` cannot be used for a file of `duration_secs`, as a sentence for a toast.
+fn trim_error(trim: &Trim, duration_secs: f32) -> Option<String> {
+    if !trim.start_secs.is_finite() || !trim.end_secs.is_finite() || trim.start_secs < 0.0 {
+        return Some("That trim range is not valid".into());
+    }
+    if !trim.is_valid() {
+        return Some(format!("Keep at least {} ms of the sound", (MIN_TRIM_SECS * 1000.0).round()));
+    }
+    if trim.end_secs > duration_secs + 0.01 {
+        return Some("The trim ends after the end of the sound".into());
+    }
+    None
+}
+
+/// Stores (`Some`) or removes (`None`) a sound's trim. The file itself is never changed.
+#[tauri::command]
+pub async fn set_trim(id: String, trim: Option<Trim>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    if let Some(t) = &trim {
+        let (buffer, _) = full_buffer(&ctx, &id).await?;
+        if let Some(e) = trim_error(t, buffer.duration_secs()) {
+            return Err(e);
+        }
+    }
+    mutate(&ctx, |a| {
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.trim = trim;
+        a.engine.set_trim(&id, trim);
+        a.mark_dirty();
+        a.refresh_files();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+/// Plays `start_secs..end_secs` of a sound through the normal outputs, replacing any preview.
+/// Previews are not listed as playing.
+#[tauri::command]
+pub async fn preview_trim(id: String, start_secs: f32, end_secs: f32, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let trim = Trim { start_secs, end_secs };
+    let (buffer, _) = full_buffer(&ctx, &id).await?;
+    if let Some(e) = trim_error(&trim, buffer.duration_secs()) {
+        return Err(e);
+    }
+    let shared = ctx.shared.clone();
+    // Opening an output device can be slow, so the lock is taken on a blocking thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut a = lock(&shared);
+        let sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
+        let path = a.library.sound_path(&sound);
+        a.engine
+            .preview(&id, &path, trim, sound.volume)
+            .map(|_| ())
+            .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))
+    })
+    .await
+    .map_err(|e| format!("Playing the selection failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn stop_preview(ctx: State<'_, Ctx>) {
+    lock(&ctx.shared).engine.stop_preview();
 }
 
 #[tauri::command]

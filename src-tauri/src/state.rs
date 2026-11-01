@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use soundboard_core::audio::decode::decode_file;
 use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
-use soundboard_core::config::{self, Config, Sound, Startup};
+use soundboard_core::config::{self, Config, Sound, Startup, Trim};
 use soundboard_core::library::Library;
 use soundboard_core::palette::PALETTE;
 use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
@@ -83,9 +83,10 @@ pub struct UiSound {
     pub image_path: Option<String>,
     pub image_rev: u64,
     pub missing_file: bool,
-    /// Clip length once decoded and cached.
+    /// Length of what plays (the trimmed range when trimmed) once decoded and cached.
     pub duration_secs: Option<f32>,
     pub play_seq: u64,
+    pub trim: Option<Trim>,
 }
 
 #[derive(Serialize, Clone)]
@@ -296,6 +297,7 @@ impl App {
                         missing_file,
                         duration_secs: self.engine.cached_duration(&s.id, s.trim),
                         play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
+                        trim: s.trim,
                     }
                 })
                 .collect(),

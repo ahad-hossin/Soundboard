@@ -44,12 +44,14 @@ pub struct Trim {
 }
 
 impl Trim {
-    /// Finite, non-negative and at least `MIN_TRIM_SECS` long. Says nothing about the file length.
+    /// Finite, non-negative and at least `MIN_TRIM_SECS` long (with a little slack for f32
+    /// rounding, so a range the editor clamped to exactly 50 ms survives a reload). Says nothing
+    /// about the file length.
     pub fn is_valid(&self) -> bool {
         self.start_secs.is_finite()
             && self.end_secs.is_finite()
             && self.start_secs >= 0.0
-            && self.end_secs > self.start_secs + MIN_TRIM_SECS
+            && self.end_secs - self.start_secs >= MIN_TRIM_SECS - 1e-4
     }
 }
 
@@ -526,7 +528,7 @@ mod tests {
         let json = r#"{"sounds":[
             {"id":"ok","name":"S","file":"s.wav","trim":{"start_secs":0.5,"end_secs":2.0}},
             {"id":"neg","name":"S","file":"s.wav","trim":{"start_secs":-0.1,"end_secs":2.0}},
-            {"id":"short","name":"S","file":"s.wav","trim":{"start_secs":1.0,"end_secs":1.05}},
+            {"id":"short","name":"S","file":"s.wav","trim":{"start_secs":1.0,"end_secs":1.04}},
             {"id":"backwards","name":"S","file":"s.wav","trim":{"start_secs":2.0,"end_secs":1.0}},
             {"id":"huge","name":"S","file":"s.wav","trim":{"start_secs":0.0,"end_secs":1e40}},
             {"id":"null","name":"S","file":"s.wav","trim":null}]}"#;
@@ -538,8 +540,9 @@ mod tests {
 
     #[test]
     fn trim_validity_needs_finite_ordered_and_min_length() {
-        assert!(Trim { start_secs: 0.0, end_secs: 0.051 }.is_valid());
-        assert!(!Trim { start_secs: 0.0, end_secs: 0.05 }.is_valid());
+        assert!(Trim { start_secs: 0.0, end_secs: 0.05 }.is_valid());
+        assert!(Trim { start_secs: 1.0, end_secs: 1.05 }.is_valid(), "f32 rounding of a 50 ms range");
+        assert!(!Trim { start_secs: 0.0, end_secs: 0.049 }.is_valid());
         assert!(!Trim { start_secs: f32::NAN, end_secs: 1.0 }.is_valid());
         assert!(!Trim { start_secs: 0.0, end_secs: f32::INFINITY }.is_valid());
     }
