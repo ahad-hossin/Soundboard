@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { TileGrid } from "./components/TileGrid";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { api } from "./lib/api";
@@ -32,7 +33,9 @@ export default function App() {
     <div className="flex h-full flex-col">
       <TopBar />
       <div className="flex min-h-0 flex-1">
-        <main className="min-w-0 flex-1 overflow-y-auto p-3" />
+        <main className="min-w-0 flex-1 overflow-y-auto p-3">
+          <TileGrid />
+        </main>
       </div>
       <Toasts />
     </div>
