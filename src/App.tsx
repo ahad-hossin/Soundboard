@@ -3,6 +3,7 @@ import { TileGrid } from "./components/TileGrid";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { api } from "./lib/api";
+import { isTypingTarget } from "./lib/keys";
 import { useStore } from "./lib/store";
 
 export default function App() {
@@ -15,8 +16,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-      if (e.key === "Escape" && !typing) void api.stopAll();
+      if (e.key === "Escape" && !isTypingTarget(e.target)) void api.stopAll();
     };
     const noMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("keydown", onKey);

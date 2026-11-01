@@ -8,6 +8,7 @@ export interface UiSound {
   volume: number;
   hotkey: string | null;
   image_path: string | null;
+  image_rev: number;
   missing_file: boolean;
 }
 export interface UiDevices { speakers: string | null; virtual_mic: string | null; available: DeviceInfo[] }

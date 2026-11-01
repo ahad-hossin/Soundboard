@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", image_path: null, missing_file: false };
+const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", image_path: null, image_rev: 0, missing_file: false };
 
 function renderTile(over: Partial<UiSound> = {}, playing = false, onPlay = vi.fn(), onVolume = vi.fn()) {
   const s = { ...sound, ...over };
@@ -37,7 +37,7 @@ describe("Tile", () => {
 
   it("renders the image when present", () => {
     renderTile({ image_path: "C:/x/s1.png" });
-    expect(document.querySelector("img")?.getAttribute("src")).toBe("asset://C:/x/s1.png");
+    expect(document.querySelector("img")?.getAttribute("src")).toBe("asset://C:/x/s1.png?v=0");
   });
 
   it("flags a missing file", () => {

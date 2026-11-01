@@ -58,6 +58,7 @@ pub struct UiSound {
     pub volume: f32,
     pub hotkey: Option<String>,
     pub image_path: Option<String>,
+    pub image_rev: u64,
     pub missing_file: bool,
 }
 
@@ -139,13 +140,23 @@ impl App {
                 .config
                 .sounds
                 .iter()
-                .map(|s| UiSound {
-                    id: s.id.clone(),
-                    name: s.name.clone(),
-                    volume: s.volume,
-                    hotkey: s.hotkey.clone(),
-                    image_path: self.library.image_path(s).map(|p| p.to_string_lossy().into_owned()),
-                    missing_file: !self.library.sound_path(s).exists(),
+                .map(|s| {
+                    let image = self.library.image_path(s);
+                    let image_rev = image
+                        .as_ref()
+                        .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    UiSound {
+                        id: s.id.clone(),
+                        name: s.name.clone(),
+                        volume: s.volume,
+                        hotkey: s.hotkey.clone(),
+                        image_path: image.map(|p| p.to_string_lossy().into_owned()),
+                        image_rev,
+                        missing_file: !self.library.sound_path(s).exists(),
+                    }
                 })
                 .collect(),
             playing: self.engine.playing(),
