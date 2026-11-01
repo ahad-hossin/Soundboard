@@ -43,9 +43,17 @@ pub fn get_state(ctx: State<'_, Ctx>) -> UiState {
 #[tauri::command]
 pub async fn play(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
     let shared = ctx.shared.clone();
-    let toasts = tauri::async_runtime::spawn_blocking(move || lock(&shared).play(&id))
+    let result = tauri::async_runtime::spawn_blocking(move || lock(&shared).play(&id))
         .await
-        .map_err(|e| format!("Playing the sound failed: {e}"))??;
+        .map_err(|e| format!("Playing the sound failed: {e}"));
+    // Restart-on-replay may have stopped the previous sinks before failing, so push state either way.
+    let toasts = match result.and_then(|r| r) {
+        Ok(t) => t,
+        Err(e) => {
+            emit_state(&app, &ctx);
+            return Err(e);
+        }
+    };
     for t in toasts {
         emit_toast(&app, &t.level, t.message);
     }
