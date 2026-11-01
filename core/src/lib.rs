@@ -6,5 +6,7 @@ pub mod audio;
 
 pub mod library;
 
+pub mod hotkeys;
+
 #[cfg(test)]
 pub mod test_util;
