@@ -8,3 +8,5 @@ pub use backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTar
 pub use cache::BufferCache;
 pub use engine::{sine, Engine, Outputs, PlayOutcome, TEST_TONE_ID};
 pub use fake_backend::FakeBackend;
+pub mod rodio_backend;
+pub use rodio_backend::RodioBackend;
