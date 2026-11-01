@@ -5,7 +5,7 @@ pub mod protocol;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -47,7 +47,7 @@ pub enum HubEvent {
     Kick,
 }
 
-type ClientsChanged = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+type ClientsChanged = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 /// Fan-out of state to every connected phone, plus a client counter.
 #[derive(Clone)]
@@ -55,6 +55,8 @@ pub struct Hub {
     tx: broadcast::Sender<HubEvent>,
     clients: Arc<AtomicUsize>,
     on_clients_changed: ClientsChanged,
+    /// Bumped on every `kick_all`, so a session that lagged past the kick event still notices it.
+    kick_generation: Arc<AtomicU64>,
 }
 
 impl Default for Hub {
@@ -66,7 +68,12 @@ impl Default for Hub {
 impl Hub {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(64);
-        Self { tx, clients: Arc::new(AtomicUsize::new(0)), on_clients_changed: Arc::new(Mutex::new(None)) }
+        Self {
+            tx,
+            clients: Arc::new(AtomicUsize::new(0)),
+            on_clients_changed: Arc::new(Mutex::new(None)),
+            kick_generation: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     pub fn broadcast_state(&self, msg: &ServerMsg) {
@@ -77,7 +84,12 @@ impl Hub {
 
     /// Closes every connected client; used after the PIN changes.
     pub fn kick_all(&self) {
+        self.kick_generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.tx.send(HubEvent::Kick);
+    }
+
+    pub(crate) fn kick_generation(&self) -> u64 {
+        self.kick_generation.load(Ordering::SeqCst)
     }
 
     pub fn client_count(&self) -> usize {
@@ -85,20 +97,23 @@ impl Hub {
     }
 
     pub fn set_on_clients_changed(&self, f: Box<dyn Fn() + Send + Sync>) {
-        *self.on_clients_changed.lock().unwrap() = Some(f);
+        *self.on_clients_changed.lock().unwrap() = Some(Arc::from(f));
     }
 
     fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
         self.tx.subscribe()
     }
 
-    fn client_delta(&self, delta: isize) {
+    pub(crate) fn client_delta(&self, delta: isize) {
         if delta > 0 {
             self.clients.fetch_add(delta as usize, Ordering::SeqCst);
         } else {
             self.clients.fetch_sub((-delta) as usize, Ordering::SeqCst);
         }
-        if let Some(f) = self.on_clients_changed.lock().unwrap().as_ref() {
+        // Clone the callback out and release the lock before calling it, so the callback may
+        // take other locks (or re-enter the hub) and a panic in it cannot poison the hub.
+        let callback = self.on_clients_changed.lock().unwrap().clone();
+        if let Some(f) = callback {
             f();
         }
     }
@@ -242,6 +257,7 @@ async fn ws_route(
 async fn client_session(socket: WebSocket, ctx: AppCtx) {
     let (mut sink, mut stream) = socket.split();
     let mut rx = ctx.hub.subscribe();
+    let connected_generation = ctx.hub.kick_generation();
     ctx.hub.client_delta(1);
 
     let json = serde_json::to_string(&ctx.handler.snapshot()).unwrap_or_default();
@@ -261,6 +277,11 @@ async fn client_session(socket: WebSocket, ctx: AppCtx) {
                     break;
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // The lag may have dropped a Kick; the generation tells us whether one happened.
+                    if ctx.hub.kick_generation() != connected_generation {
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
                     let json = serde_json::to_string(&ctx.handler.snapshot()).unwrap_or_default();
                     if sink.send(Message::Text(json.into())).await.is_err() { break; }
                 }
@@ -295,6 +316,27 @@ mod tests {
         hub.broadcast_state(&ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![] });
         hub.kick_all();
         assert_eq!(hub.client_count(), 0);
+    }
+
+    #[test]
+    fn kick_all_increments_generation() {
+        let hub = Hub::new();
+        assert_eq!(hub.kick_generation(), 0);
+        hub.kick_all();
+        hub.kick_all();
+        assert_eq!(hub.kick_generation(), 2);
+    }
+
+    #[test]
+    fn clients_changed_callback_runs_without_hub_lock() {
+        let hub = Hub::new();
+        let inner = hub.clone();
+        hub.set_on_clients_changed(Box::new(move || {
+            // Re-entrant: would deadlock if the hub mutex were held during the callback.
+            inner.set_on_clients_changed(Box::new(|| {}));
+        }));
+        hub.client_delta(1);
+        assert_eq!(hub.client_count(), 1);
     }
 
     #[tokio::test]
