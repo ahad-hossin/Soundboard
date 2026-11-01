@@ -61,6 +61,14 @@ Download the latest installer from the
 - Optional PIN lock with lockout after repeated wrong attempts. Changing the PIN
   signs every phone out.
 
+**Phone cannot connect?**
+1. Open the Remote panel and press Allow through Windows Firewall, then accept
+   the Windows administrator prompt. The panel shows "Windows Firewall:
+   allowed" afterwards.
+2. Make sure the PC and phone are on the same Wi-Fi, not a guest or isolated
+   network.
+3. Type the URL exactly as the panel shows it, including the port.
+
 **Startup and tray**
 - Start with Windows, start minimized to the tray, close to tray.
 - Tray menu: Show, Stop All, Quit. Launching the app again just brings the

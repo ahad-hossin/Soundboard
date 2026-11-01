@@ -294,9 +294,12 @@ images/
 - `axum` server on a tokio task, bound to `0.0.0.0:<port>`, default 7331.
 - If the port is busy, try the next 10 ports in order, then give up with an
   error toast. The actual port used is shown in the Remote panel.
-- First launch triggers the Windows Firewall prompt. The Remote panel shows a
-  hint: "If your phone cannot connect, allow Soundboard through Windows
-  Firewall on private networks."
+- First launch triggers the Windows Firewall prompt. The Remote panel shows
+  the Windows Firewall status for the app and a short hint ("If the phone still
+  cannot connect, check that the PC and phone are on the same Wi-Fi.").
+  The status is allowed, blocked, no rule yet or could not check. When it is
+  blocked or there is no rule, an "Allow through Windows Firewall" button adds
+  an inbound allow rule through a UAC prompt and then re-checks.
 - Remote panel in the desktop UI shows the full URL for each non-loopback IPv4
   address (usually one) and a QR code of the first.
 
