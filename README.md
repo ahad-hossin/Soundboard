@@ -135,7 +135,7 @@ Build the installer:
 npm run tauri build
 ```
 
-Output: `target/release/bundle/nsis/Soundboard_0.1.0_x64-setup.exe`.
+Output: `target/release/bundle/nsis/Soundboard_<version>_x64-setup.exe`.
 
 ## How it is built
 
