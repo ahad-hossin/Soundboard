@@ -17,10 +17,12 @@ or game voice chat hears.
 
 - Windows desktop app built with Tauri 2 + React + Tailwind.
 - Sounds from local files only: mp3, wav, ogg, flac.
+- Optional image per sound (png, jpg, webp, gif) shown on its tile.
 - Dual output: play to up to two WASAPI output devices at once.
 - Per-sound volume and master volume.
 - Stop All.
 - Global hotkeys per sound plus one for Stop All.
+- Drag to reorder tiles.
 - Phone remote: web page on LAN with the same sound grid, master volume, Stop All.
 - Optional PIN lock on the phone remote.
 
@@ -31,17 +33,66 @@ or game voice chat hears.
 - YouTube/URL download, mic recording, clip trimming.
 - MIDI / Stream Deck integration.
 - HTTPS on the remote server.
+- Light theme.
 - macOS / Linux builds.
+
+## Design principles (UI)
+
+These rules apply to both the desktop UI and the phone page.
+
+1. **Monochrome base.** Backgrounds, surfaces, borders, text are shades of one
+   near-black to off-white ramp. No gradients for decoration, no colored icons,
+   no colored chrome.
+2. **Color means something.** Exactly two colors exist:
+   - **Accent (amber `#F5B324`)** means *live*: a sound currently playing, the
+     focused element, a connected remote client, the primary action.
+   - **Danger (red `#EF4444`)** means *stop or destroy*: Stop All, Delete.
+   Sound images are the only other source of color, and they are the content.
+3. **Images are the content.** A tile with an image is that image, edge to
+   edge, with the name in a quiet label over a bottom scrim. A tile without an
+   image is a flat surface with the name. Nothing else competes.
+4. **Every element earns its place.** No welcome text, no feature blurbs, no
+   icons that duplicate labels, no section headers over obvious groups. If an
+   element has no action or no information, it is removed.
+5. **Panels, not modals.** Settings and Remote open as a right-side panel that
+   pushes the grid, so the grid stays usable. Only destructive confirmation
+   (Delete) uses a small dialog.
+6. **Keyboard-first.** Tab moves between tiles, Enter or Space plays, Esc
+   stops all while the window is focused. Focus is visible as an accent ring.
+   Hotkeys are shown on tiles in a monospace badge.
+7. **Immediate feedback.** A tile shows playing state within one frame of the
+   click (optimistic), then follows Rust state. Toasts are small, bottom-left,
+   auto-dismiss in 4 s, never stacked more than three.
+8. **Density.** Tiles are square, minimum 120 px, 8 px gap. Typography is a
+   system sans stack at 13 px body, 12 px labels, 11 px monospace badges.
+   Controls are 32 px tall.
+
+### Tokens
+
+```
+--bg          #0A0A0B
+--surface     #141416
+--surface-2   #1C1C1F
+--border      #26262A
+--text        #EDEDEF
+--text-dim    #8A8A93
+--text-mute   #55555C
+--accent      #F5B324
+--accent-ink  #1A1200   (text on accent)
+--danger      #EF4444
+--radius      8px
+```
 
 ## Architecture
 
 ```
 Tauri app (single process)
-├─ Rust core
+├─ Rust core crate (no Tauri dependency, unit-testable)
 │  ├─ audio engine    rodio/cpal, two output devices, per-sound + master gain
-│  ├─ library store   config.json + sounds/ folder in app data dir
-│  ├─ hotkeys         tauri-plugin-global-shortcut, key -> sound id
-│  └─ remote server   axum on 0.0.0.0:<port>, serves phone page + WebSocket
+│  ├─ library         config.json + sounds/ + images/ in app data dir
+│  ├─ hotkeys logic   accelerator normalization + conflict detection
+│  └─ remote server   axum, serves phone page + WebSocket, PIN auth
+├─ Tauri app crate    wires core to Tauri: commands, events, global-shortcut plugin
 ├─ Desktop UI         React, calls Rust via Tauri commands, listens to events
 └─ Phone page         single bundled HTML/JS file, served by axum
 ```
@@ -54,17 +105,29 @@ Every trigger (tile click, hotkey, phone tap) ends in the same Rust function
 clients receive it through their WebSocket. Neither frontend holds logic beyond
 rendering and sending commands.
 
-### Rust modules
+### Crates
 
-| Module | Responsibility | Depends on |
+| Crate | Path | Responsibility |
 |---|---|---|
-| `config` | Load/save `config.json`; typed `Config` struct; backup on corrupt | serde, fs |
-| `library` | Add/rename/delete sounds; copy files into `sounds/`; validate decodability | config, audio (decode check) |
-| `audio` | `AudioBackend` trait; `RodioBackend` impl; device enumeration; play/stop; live gain | rodio, cpal |
-| `hotkeys` | Register/unregister shortcuts; conflict detection; map key -> action | tauri-plugin-global-shortcut, config |
-| `remote` | axum router; static page; WebSocket hub; PIN auth; lockout | axum, tokio, config |
-| `state` | Shared `AppState` (`Arc<Mutex<...>>`); emits `state-changed` | all above |
-| `commands` | Tauri `#[command]` functions the React UI calls | state |
+| `soundboard-core` | `core/` | Everything testable without Tauri: config, audio engine + backends, library, hotkey logic, remote server |
+| `soundboard` (app) | `src-tauri/` | Tauri setup, commands, event emission, global-shortcut registration, remote server lifecycle |
+
+### Core modules
+
+| Module | Responsibility |
+|---|---|
+| `config` | `Config` struct, defaults, load/save with atomic write, backup on corrupt |
+| `library` | Import/delete sounds and images, collision renaming, decodability check |
+| `audio::backend` | `AudioBackend` trait, `DecodedBuffer`, `DeviceTarget`, `SinkHandle` |
+| `audio::fake_backend` | Recording fake for tests |
+| `audio::rodio_backend` | Real backend; owns `OutputStream`s on a dedicated audio thread |
+| `audio::decode` | File to `DecodedBuffer` via rodio decoders |
+| `audio::cache` | LRU of decoded buffers by sound id with byte cap |
+| `audio::engine` | Fan-out to outputs, gains, active sink tracking, reaping, fallback |
+| `hotkeys` | Accelerator normalization, conflict detection |
+| `remote::auth` | PIN hashing, token issue/verify, IP lockout |
+| `remote::protocol` | WebSocket message types |
+| `remote` | axum router, WebSocket hub, static page, `RemoteHandler` trait |
 
 ## Data model
 
@@ -83,40 +146,50 @@ rendering and sending commands.
     "pin_hash": null,
     "token_secret": "random-32-bytes-base64"
   },
-  "stop_all_hotkey": "Ctrl+Shift+Escape",
+  "stop_all_hotkey": "Ctrl+Shift+F12",
   "sounds": [
     {
       "id": "uuid",
       "name": "Airhorn",
       "file": "airhorn.mp3",
+      "image": "uuid.png",
       "volume": 1.0,
-      "hotkey": "Ctrl+Shift+1",
-      "color": "#ff6b6b"
+      "hotkey": "Ctrl+Shift+Digit1"
     }
   ]
 }
 ```
 
+- Order of `sounds` is display order. Reordering rewrites the array.
 - `devices.*` may be `null` meaning "not used". At least one should be set for
-  sound to be heard; the UI warns if both are null.
+  sound to be heard; the UI shows a banner if both are null.
 - Device identity is by name string. cpal on Windows exposes stable friendly
   names; IDs are not stable across reboots.
 - `file` is relative to `<app_data>/sounds/`. Adding a sound copies the source
   file in and renames on collision (`airhorn (2).mp3`).
+- `image` is relative to `<app_data>/images/`, named `<sound id>.<ext>`, or
+  null.
+- Hotkeys use `KeyboardEvent.code` key names with Title-case modifiers in the
+  fixed order `Ctrl`, `Alt`, `Shift`, `Super`: for example `Ctrl+Shift+Digit1`,
+  `Alt+KeyQ`, `F9`. This is the format `tauri-plugin-global-shortcut` parses.
 - `pin_hash` is argon2 of the PIN, or null for no lock.
 - `token_secret` signs remote auth tokens; regenerated whenever the PIN changes,
   which invalidates all existing phone tokens.
+- Default Stop All hotkey is `Ctrl+Shift+F12`. (`Ctrl+Shift+Escape` is owned by
+  Windows Task Manager and cannot be registered.)
 
 ### Storage location
 
-`%APPDATA%\soundboard\` (via Tauri `app_data_dir`):
+Tauri `app_data_dir()`, which on Windows is
+`%APPDATA%\co.carbonweb.soundboard\`:
 
 ```
 config.json
 config.json.bak      (written only when config.json failed to parse)
 sounds/
   airhorn.mp3
-  ...
+images/
+  <sound id>.png
 ```
 
 ## Audio engine
@@ -125,38 +198,39 @@ sounds/
 
 - On startup and on Settings open, enumerate output devices via `cpal`
   (WASAPI host). Settings shows two dropdowns, "Speakers" and "Virtual mic",
-  each with a "None" option and a "Test tone" button.
-- If a configured device name is not found at launch, that slot falls back to
-  the system default output for the session and a toast says which device was
-  missing. Config is not modified.
+  each with a "None" option and a "Test" button that plays a 0.4 s sine tone.
+- If a configured device name is not found when a sound plays, that slot falls
+  back to the system default output and a toast says which device was missing,
+  once per session per device. Config is not modified.
 
 ### Playback
 
 - `play(sound_id)`:
   1. Fetch decoded PCM buffer from cache, or decode the file with
-     `rodio::Decoder` into a `rodio::buffer::SamplesBuffer` and insert into cache.
-  2. For each enabled output device, create a `rodio::Sink` on that device's
-     `OutputStream`, set volume to `sound.volume * master_volume`, append a
-     clone of the buffer.
-  3. Record the active sinks under a `play_instance_id` in `AppState`.
+     `rodio::Decoder` into f32 samples and insert into cache.
+  2. For each enabled output device, ask the backend to play the buffer at
+     gain `sound.volume * master_volume`.
+  3. Record the returned sink handles under a play instance in the engine.
   4. Emit `state-changed` with `playing: [sound_id, ...]`.
 - Sounds overlap: each play creates fresh sinks. Finished sinks are reaped by a
-  background task that polls `Sink::empty()` every 100 ms and emits
-  `state-changed` when the playing set changes.
-- `stop_all()` drops every active sink and emits `state-changed`.
-- Changing a sound's volume or master volume updates `Sink::set_volume` on all
-  matching active sinks immediately.
-- `OutputStream` per device is opened once and kept for the app lifetime; it is
-  reopened if the device changes in Settings.
+  background thread that polls every 100 ms and emits `state-changed` when the
+  playing set changes.
+- `stop_all()` stops every active sink and emits `state-changed`.
+- Changing a sound's volume or master volume updates gain on all matching
+  active sinks immediately.
+- `OutputStream`s are owned by one audio thread (cpal streams are not thread
+  safe) and opened lazily per device, kept for the app lifetime, and dropped
+  when devices change in Settings.
 
 ### Decoded buffer cache
 
 - LRU keyed by sound id, evicting when total bytes exceed 200 MB.
-- Invalidated for a sound when its file is replaced or deleted.
+- Invalidated for a sound when its file is deleted.
 
 ### Testability
 
-- `trait AudioBackend { fn devices(); fn play(device, buffer, gain) -> SinkHandle; fn stop(handle); fn set_gain(handle, gain); }`
+- `trait AudioBackend` with `devices`, `play`, `stop`, `set_gain`,
+  `is_finished`, `reset`.
 - `RodioBackend` is the real one. `FakeBackend` records calls for unit tests.
   Real audio output is verified with a manual checklist, not automated tests.
 
@@ -164,13 +238,13 @@ sounds/
 
 - Uses `tauri-plugin-global-shortcut`. Shortcuts fire while any other app is
   focused.
-- Each sound has an optional `hotkey` string in the plugin's accelerator format
-  (for example `Ctrl+Shift+1`). One global `stop_all_hotkey`, default
-  `Ctrl+Shift+Escape`.
+- Each sound has an optional `hotkey` accelerator. One global
+  `stop_all_hotkey`, default `Ctrl+Shift+F12`.
 - Binding flow: user clicks "Set hotkey" on a tile, the UI captures the next
-  key combination, sends it to Rust. Rust checks for conflicts against all other
+  key combination (requires at least one modifier unless it is an F-key),
+  sends it to Rust. Rust normalizes, checks for conflicts against all other
   sounds and the Stop All key. On conflict it returns an error naming the owner
-  and does not register. On success it registers with the plugin and saves.
+  and does not register. On success it re-registers all shortcuts and saves.
 - "Clear hotkey" unregisters and saves.
 - All hotkeys are registered on startup from config. A shortcut the OS refuses
   (already taken system-wide) is reported with a toast and left unbound in
@@ -194,8 +268,9 @@ sounds/
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/` | none | Phone page HTML |
-| GET | `/manifest.json`, `/icon.png` | none | PWA install |
-| POST | `/auth` | none | Body `{pin}`; returns `{token}` or 401 |
+| GET | `/manifest.json`, `/icon.svg` | none | PWA install |
+| GET | `/img/{id}` | none | Sound image bytes |
+| POST | `/auth` | none | Body `{pin}`; returns `{token}` or 401/429 |
 | GET | `/ws?token=...` | token (if PIN set) | WebSocket |
 
 ### WebSocket protocol
@@ -206,7 +281,7 @@ Server -> client on connect and on every change:
 { "type": "state",
   "master_volume": 0.8,
   "playing": ["uuid"],
-  "sounds": [{ "id": "uuid", "name": "Airhorn", "color": "#ff6b6b", "volume": 1.0 }] }
+  "sounds": [{ "id": "uuid", "name": "Airhorn", "volume": 1.0, "has_image": true }] }
 ```
 
 Client -> server:
@@ -222,15 +297,18 @@ Unknown or malformed messages are ignored and logged.
 ### Phone page
 
 - One HTML file with inline CSS and JS, no framework, embedded in the binary
-  with `include_str!`.
-- Layout: top bar with master volume slider and Stop All; below, a responsive
-  grid of large tap targets showing sound name on the sound's color. A tile
-  highlights while its id is in `playing`.
-- If the server responds 401 on WebSocket connect, show a PIN entry screen.
-  On success store the token in `localStorage` and reconnect.
-- Auto-reconnect with backoff on socket close.
+  with `include_str!`. Same tokens and principles as the desktop UI.
+- Layout: top bar with connection dot, master volume slider; grid of square
+  tiles, 3 columns in portrait, image edge to edge with name scrim, or flat
+  surface with name; sticky bottom Stop All in danger style, full width.
+- A tile highlights with the accent ring while its id is in `playing`.
+  Tapping vibrates 10 ms where supported.
+- If the WebSocket connect is rejected with 401, show a PIN entry screen with
+  a numeric keypad. On success store the token in `localStorage` and
+  reconnect.
+- Auto-reconnect with backoff (0.5 s doubling to 8 s) on socket close.
 - Includes a web app manifest so it can be added to the home screen and run
-  full-screen.
+  full-screen. `touch-action: manipulation`, no text selection.
 
 ### PIN lock
 
@@ -250,49 +328,65 @@ Unknown or malformed messages are ignored and logged.
 
 ### Main view
 
-- Grid of sound tiles, auto-fit columns, minimum tile width 140 px.
-- Tile: name, hotkey badge (if set), a small volume slider, background in the
-  sound's color. Click plays. Glows while playing.
-- Right-click context menu: Rename, Set hotkey, Clear hotkey, Change color,
-  Delete (with confirm).
-- Empty state: "Drop audio files here or click Add sounds."
+- Grid of square tiles, auto-fill columns, minimum tile width 120 px, 8 px gap.
+- Tile: image edge to edge (or flat `--surface-2`), name label bottom-left on a
+  bottom scrim, hotkey badge top-right in monospace, thin volume slider
+  revealed on hover along the bottom edge. Click plays. Accent ring while
+  playing. Accent ring on keyboard focus.
+- Drag a tile to reorder. Order persists.
+- Right-click context menu: Rename, Set image, Remove image, Set hotkey,
+  Clear hotkey, Delete. Delete is in danger color and opens a small confirm
+  dialog.
+- Empty state: a single line in `--text-dim`, centered: "Drop audio files
+  here, or Add." where Add is a button.
+- Banner above the grid when both device slots are null: "No output device
+  selected. Open Settings." with Settings as a link.
 
 ### Top bar
 
-- Master volume slider, Stop All button, Add sounds button, Remote toggle
-  (opens Remote panel), Settings gear.
+Left: "Soundboard" in `--text-dim`, then sound count. Right, in order:
+master volume (speaker glyph + 120 px range), Stop All (danger outline,
+solid danger while anything plays), Add (neutral filled), Remote (toggle,
+small accent dot when a phone is connected), Settings (toggle).
 
 ### Add sounds
 
 - Multi-file picker via Tauri dialog plugin, filtered to mp3/wav/ogg/flac.
-- Drag-and-drop of files onto the window.
+- Drag-and-drop of files onto the window. While dragging, the grid border
+  turns accent.
 - Each file is test-decoded before being copied in. Undecodable files are
   rejected with a toast naming the file; the others proceed.
-- Name defaults to the file name without extension. Color is picked from a
-  fixed palette in rotation.
+- Name defaults to the file name without extension.
 
-### Settings modal
+### Set image
 
-- Speakers device dropdown + Test tone.
-- Virtual mic device dropdown + Test tone.
-- Remote port (number input), applies on save by restarting the server.
-- PIN (set / clear).
+- Context menu "Set image" opens a picker filtered to png/jpg/jpeg/webp/gif.
+  The file is copied to `images/<sound id>.<ext>`. Validation uses file
+  magic bytes, not extension.
+
+### Side panel (Settings)
+
+- Speakers device dropdown + Test.
+- Virtual mic device dropdown + Test.
 - Stop All hotkey (capture control).
-- Security statement text for the remote.
+- Remote port (number input 1024 to 65535), applies on save by restarting the
+  server.
+- PIN (set / clear), with the security statement underneath in `--text-mute`.
 
-### Remote panel
+### Side panel (Remote)
 
-- URL(s), QR code, connected client count, firewall hint.
+- URL(s), QR code (monochrome, on `--surface`), connected client count,
+  firewall hint in `--text-mute`.
 
 ## Error handling
 
 | Situation | Behavior |
 |---|---|
-| Configured device missing at launch | Use default output for that slot this session; toast once |
-| Device disappears mid-session | Next play falls back to default output; toast once per session |
-| Both device slots null | Banner in main view: "No output device selected" |
-| Undecodable file on add | Toast with file name; file not copied |
-| Sound file missing on play | Toast; tile shows warning icon; sound stays in list |
+| Configured device missing on play | Use default output for that slot; toast once per session per device |
+| Both device slots null | Banner in main view |
+| Unsupported extension or undecodable file on add | Toast with file name; file not copied |
+| Not an image on Set image | Toast; nothing changed |
+| Sound file missing on play | Toast; tile shows a small warning glyph; sound stays in list |
 | Port and next 10 busy | Toast; Remote panel shows "Server not running" with Retry |
 | `config.json` unparsable | Copy to `config.json.bak`, start with defaults, toast |
 | Hotkey refused by OS | Toast naming the key; left unbound this session |
@@ -300,59 +394,70 @@ Unknown or malformed messages are ignored and logged.
 
 ## Testing
 
-### Rust unit tests
+### Core crate unit tests (`cargo test -p soundboard-core`)
 
-- `config`: default round-trip, load of each schema version, corrupt file
-  produces `.bak` and defaults.
-- `hotkeys`: conflict detection across sounds and Stop All; accelerator string
-  normalization.
-- `remote::auth`: PIN hash verify, token issue/verify, token invalid after
-  secret rotation, lockout counter timing (with injected clock).
-- `library`: name collision renaming; rejection of undecodable input (using a
-  tiny invalid file fixture and a tiny valid wav fixture).
-- `audio` with `FakeBackend`: play fans out to each enabled device with gain
-  = sound × master; stop_all stops every handle; volume change updates active
-  handles; cache eviction at the byte limit.
+- `config`: default round-trip, missing file gives defaults, corrupt file
+  produces `.bak` and defaults, atomic save.
+- `hotkeys`: normalization of modifier aliases and order; conflict detection
+  across sounds and Stop All; invalid accelerators rejected.
+- `remote::auth`: PIN format check, hash verify, token issue/verify, token
+  invalid after secret rotation, lockout counter with injected `Instant`.
+- `library`: unsupported extension rejected; undecodable rejected; valid wav
+  imported with collision renaming; image import validates magic bytes and
+  replaces the old image; delete removes both files.
+- `audio::cache`: LRU order, eviction at byte cap, remove.
+- `audio::decode`: generated wav decodes to the expected sample count.
+- `audio::engine` with `FakeBackend`: play fans out to each enabled device
+  with gain = sound × master; missing named device falls back to default and
+  reports it; no outputs is an error; stop_all stops every handle; volume
+  change updates active handles; reap drops finished handles.
 
-### Rust integration tests
+### Core crate integration tests
 
-- axum router with `tower::ServiceExt::oneshot`: `/` returns HTML; `/auth`
-  flows; `/ws` rejects without token when PIN set, accepts when no PIN.
+- axum router with `tower::ServiceExt::oneshot` and a fake `RemoteHandler`:
+  `/` returns HTML; `/auth` wrong PIN 401, right PIN 200 with a verifying
+  token, 6th wrong attempt 429; `/ws` without token when PIN set returns 401;
+  `/img/{id}` 404 for unknown.
 
-### Frontend tests
+### Frontend tests (`npm test`)
 
-- vitest + React Testing Library: tile grid renders sounds and playing state;
-  settings form validates PIN length and port range; hotkey capture control
-  formats accelerators.
+- vitest + React Testing Library: accelerator capture and display helpers;
+  Tile renders name, badge, playing ring; Settings panel validates PIN length
+  and port range.
 
-### Manual checklist (real audio)
+### Manual checklist (real audio and devices)
 
 - Sound plays on speakers alone, virtual mic alone, both.
 - Discord test call hears the sound through the virtual mic.
 - Hotkey fires while a game window is focused.
 - Phone connects via QR, plays, sees playing highlight, Stop All works.
 - PIN required after setting; old phone token rejected after PIN change.
+- Drag reorder persists after restart.
 
 ## Project layout
 
 ```
-soundboard/
-├─ src/                  React desktop UI
-│  ├─ components/        TileGrid, Tile, TopBar, SettingsModal, RemotePanel, HotkeyCapture
-│  ├─ lib/tauri.ts       typed wrappers around invoke/listen
-│  └─ App.tsx
-├─ src-tauri/
+Soundboard/
+├─ Cargo.toml                 workspace: core, src-tauri
+├─ package.json
+├─ core/                      soundboard-core crate
+│  ├─ Cargo.toml
 │  ├─ src/
-│  │  ├─ main.rs
-│  │  ├─ state.rs
-│  │  ├─ commands.rs
+│  │  ├─ lib.rs
 │  │  ├─ config.rs
 │  │  ├─ library.rs
-│  │  ├─ audio/{mod.rs, backend.rs, rodio_backend.rs, fake_backend.rs, cache.rs}
 │  │  ├─ hotkeys.rs
-│  │  └─ remote/{mod.rs, routes.rs, ws.rs, auth.rs, page.html}
+│  │  ├─ audio/{mod.rs, backend.rs, fake_backend.rs, rodio_backend.rs, decode.rs, cache.rs, engine.rs}
+│  │  └─ remote/{mod.rs, auth.rs, protocol.rs, page.html, manifest.json, icon.svg}
+│  └─ tests/remote_routes.rs
+├─ src-tauri/                 Tauri app crate
 │  ├─ Cargo.toml
-│  └─ tauri.conf.json
-├─ docs/superpowers/specs/
-└─ package.json
+│  ├─ tauri.conf.json
+│  ├─ capabilities/default.json
+│  └─ src/{main.rs, lib.rs, state.rs, commands.rs, hotkeys_glue.rs, remote_glue.rs}
+├─ src/                       React desktop UI
+│  ├─ main.tsx, App.tsx, index.css
+│  ├─ lib/{api.ts, accel.ts, store.ts}
+│  └─ components/{TopBar, TileGrid, Tile, ContextMenu, ConfirmDialog, Toasts, HotkeyCapture, SettingsPanel, RemotePanel}.tsx
+└─ docs/superpowers/{specs,plans}/
 ```
