@@ -28,6 +28,15 @@ function DeviceSelect({ id, label, value, available, onChange, onTest }: {
   );
 }
 
+function StartupOption({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 py-1 text-[13px] text-text">
+      <input type="checkbox" className="accent-accent" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      {label}
+    </label>
+  );
+}
+
 export function SettingsPanel() {
   const state = useStore((s) => s.state)!;
   const run = useStore((s) => s.run);
@@ -36,6 +45,7 @@ export function SettingsPanel() {
   const [port, setPort] = useState(String(state.remote.port ?? 7331));
   const [pin, setPin] = useState("");
   const { speakers, virtual_mic, microphone, available, available_inputs } = state.devices;
+  const { autostart, start_minimized, close_to_tray } = state.startup;
   const micGain = useSliderDraft(state.devices.mic_gain, (v) => void run(api.setMicGain(v)));
 
   // The device list is cached in the backend; re-enumerate whenever the panel opens.
@@ -71,6 +81,16 @@ export function SettingsPanel() {
           <input id="mic-gain" type="range" min={0} max={2} step={0.05} className="flex-1" {...micGain} />
           <span className="w-12 text-right font-mono text-dim">{Math.round(micGain.value * 100)}%</span>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <span className="label">Startup</span>
+        <StartupOption label="Start with Windows" checked={autostart}
+          onChange={(v) => void run(api.setStartup(v, start_minimized, close_to_tray))} />
+        <StartupOption label="Start minimized to tray" checked={start_minimized}
+          onChange={(v) => void run(api.setStartup(autostart, v, close_to_tray))} />
+        <StartupOption label="Close to tray" checked={close_to_tray}
+          onChange={(v) => void run(api.setStartup(autostart, start_minimized, v))} />
       </div>
 
       <div className="mb-4">

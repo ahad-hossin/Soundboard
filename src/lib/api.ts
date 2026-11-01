@@ -24,11 +24,13 @@ export interface UiDevices {
   available: DeviceInfo[];
   available_inputs: DeviceInfo[];
 }
+export interface UiStartup { autostart: boolean; start_minimized: boolean; close_to_tray: boolean }
 export interface UiRemote { port: number | null; error: string | null; pin_set: boolean; addresses: string[]; clients: number }
 export interface UiState {
   master_volume: number;
   devices: UiDevices;
   stop_all_hotkey: string;
+  startup: UiStartup;
   remote: UiRemote;
   sounds: UiSound[];
   playing: string[];
@@ -60,6 +62,8 @@ export const api = {
   testTone: (device: string | null) => invoke<void>("test_tone", { device }),
   setRemotePort: (port: number) => invoke<void>("set_remote_port", { port }),
   setPin: (pin: string | null) => invoke<void>("set_pin", { pin }),
+  setStartup: (autostart: boolean, startMinimized: boolean, closeToTray: boolean) =>
+    invoke<void>("set_startup", { autostart, startMinimized, closeToTray }),
   restartRemote: () => invoke<void>("restart_remote"),
   onState: (cb: (s: UiState) => void): Promise<UnlistenFn> => listen<UiState>("state-changed", (e) => cb(e.payload)),
   onToast: (cb: (t: Toast) => void): Promise<UnlistenFn> => listen<Toast>("toast", (e) => cb(e.payload)),

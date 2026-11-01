@@ -13,6 +13,7 @@ vi.mock("../lib/api", () => ({
     setStopAllHotkey: vi.fn(),
     setRemotePort: vi.fn(),
     setPin: vi.fn(),
+    setStartup: vi.fn(),
   },
 }));
 
@@ -27,6 +28,7 @@ const base = {
     available_inputs: [{ name: "Headset Mic", is_default: true }, { name: "Webcam Mic", is_default: false }],
   },
   stop_all_hotkey: "Ctrl+Shift+F12",
+  startup: { autostart: false, start_minimized: false, close_to_tray: true },
   remote: { port: 7331, error: null, pin_set: false, addresses: ["192.168.1.20"], clients: 0 },
   sounds: [],
   playing: [],
@@ -165,6 +167,25 @@ describe("SettingsPanel", () => {
     render(<SettingsPanel />);
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(api.setPin).toHaveBeenCalledWith(null);
+  });
+
+  it("renders the three Startup checkboxes with the saved values", () => {
+    useStore.setState({ state: { ...base, startup: { autostart: true, start_minimized: false, close_to_tray: true } } });
+    render(<SettingsPanel />);
+    expect(screen.getByLabelText("Start with Windows")).toBeChecked();
+    expect(screen.getByLabelText("Start minimized to tray")).not.toBeChecked();
+    expect(screen.getByLabelText("Close to tray")).toBeChecked();
+  });
+
+  it("changes one Startup option and passes the other two through", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel />);
+    await user.click(screen.getByLabelText("Start with Windows"));
+    expect(api.setStartup).toHaveBeenLastCalledWith(true, false, true);
+    await user.click(screen.getByLabelText("Start minimized to tray"));
+    expect(api.setStartup).toHaveBeenLastCalledWith(false, true, true);
+    await user.click(screen.getByLabelText("Close to tray"));
+    expect(api.setStartup).toHaveBeenLastCalledWith(false, false, false);
   });
 
   it("opens the hotkey capture dialog from Change", async () => {

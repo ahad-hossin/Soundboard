@@ -10,6 +10,7 @@ const base = {
   master_volume: 0.8,
   devices: { speakers: null, virtual_mic: null, microphone: null, mic_gain: 1, available: [], available_inputs: [] },
   stop_all_hotkey: "Ctrl+Shift+F12",
+  startup: { autostart: false, start_minimized: false, close_to_tray: true },
   remote: { port: 7331, error: null, pin_set: false, addresses: ["192.168.1.20", "10.0.0.5"], clients: 2 },
   sounds: [],
   playing: [],
