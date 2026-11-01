@@ -43,7 +43,7 @@ These rules apply to both the desktop UI and the phone page.
 1. **Monochrome base.** Backgrounds, surfaces, borders, text are shades of one
    near-black to off-white ramp. No gradients for decoration, no colored icons,
    no colored chrome.
-2. **Color means something.** Exactly two colors exist:
+2. **Color means something.** Two chrome colors exist:
    - **Accent (amber `#F5B324`)** means *live*: a sound currently playing, the
      focused element, a connected remote client, the primary action.
    - **Danger (red `#EF4444`)** means *stop or destroy*: Stop All, Delete.
@@ -51,7 +51,7 @@ These rules apply to both the desktop UI and the phone page.
    Sound tiles are the exception: each sound carries one color from a fixed
    ten-color retro palette (`core/src/palette.rs`), assigned least-used-first at
    import and changeable from the context menu. Image tiles show it as a 3 px
-   bottom bar.
+   bar above the scrim.
 
    *Tile decoration and play animation.* A tile without an image layers a soft
    top-left highlight and one translucent white motif (circle, ring, diagonal
@@ -66,11 +66,9 @@ These rules apply to both the desktop UI and the phone page.
    The phone page draws the same decoration, sweep and press feedback.
 3. **Images are the content.** A tile with an image is that image, edge to
    edge, with the name in a quiet label over a bottom scrim. A tile without an
-   image is a flat surface with the name. Nothing else competes.
-   Sound tiles are the exception: each sound carries one color from a fixed
-   ten-color retro palette (`core/src/palette.rs`), assigned least-used-first at
-   import and changeable from the context menu. Image tiles show it as a 3 px
-   bottom bar.
+   image is its color with a soft highlight and one motif, and the name on the
+   scrim. Image tiles carry the color as a 3 px bar above the scrim. Nothing
+   else competes.
 4. **Every element earns its place.** No welcome text, no feature blurbs, no
    icons that duplicate labels, no section headers over obvious groups. If an
    element has no action or no information, it is removed.
