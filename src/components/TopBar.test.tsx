@@ -7,6 +7,7 @@ vi.mock("../lib/api", () => ({
   api: {
     stopAll: vi.fn(),
     setMasterVolume: vi.fn(),
+    openSupportPage: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -28,6 +29,12 @@ describe("TopBar", () => {
     vi.clearAllMocks();
     for (const fn of Object.values(api)) (fn as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     useStore.setState({ state: base, toasts: [] });
+  });
+
+  it("has a Buy me a coffee button that opens the support page", () => {
+    render(<TopBar />);
+    fireEvent.click(screen.getByText("Buy me a coffee"));
+    expect(api.openSupportPage).toHaveBeenCalled();
   });
 
   it("shows the master volume as a percent", () => {

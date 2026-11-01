@@ -64,12 +64,6 @@ describe("SettingsPanel", () => {
     expect(screen.getByText(/local network only/i)).toBeInTheDocument();
   });
 
-  it("has a Buy me a coffee button that opens the support page", () => {
-    render(<SettingsPanel />);
-    fireEvent.click(screen.getByText("Buy me a coffee"));
-    expect(api.openSupportPage).toHaveBeenCalled();
-  });
-
   it("offers Remove when a PIN is set", () => {
     useStore.setState({ state: { ...base, remote: { ...base.remote, pin_set: true } } });
     render(<SettingsPanel />);

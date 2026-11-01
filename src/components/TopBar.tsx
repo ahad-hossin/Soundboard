@@ -26,6 +26,14 @@ export function TopBar() {
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
       <span className="text-dim">Soundboard</span>
       <span className="text-mute tabular-nums">{state.sounds.length}</span>
+      <button
+        type="button"
+        onClick={() => void run(api.openSupportPage())}
+        title="Opens buymeacoffee.com/yokitori in your browser"
+        className="ml-2 h-7 rounded-md border border-border px-2 text-xs text-dim hover:border-dim hover:text-text"
+      >
+        Buy me a coffee
+      </button>
       <div className="flex-1" />
 
       <label className="flex items-center gap-2 text-dim" title="Master volume">

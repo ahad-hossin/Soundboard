@@ -131,17 +131,7 @@ export function SettingsPanel() {
         Wi-Fi from triggering sounds; it is not protection against a hostile network.
       </p>
 
-      <div className="mt-6 border-t border-border pt-4">
-        <button
-          type="button"
-          className="btn w-full"
-          onClick={() => void run(api.openSupportPage())}
-          title="Opens buymeacoffee.com/yokitori in your browser"
-        >
-          Buy me a coffee
-        </button>
-        <p className="mt-1 text-center text-xs text-mute">Made by Yokitori</p>
-      </div>
+      <p className="mt-6 border-t border-border pt-4 text-center text-xs text-mute">Made by Yokitori</p>
 
       {capturing && (
         <HotkeyCapture
