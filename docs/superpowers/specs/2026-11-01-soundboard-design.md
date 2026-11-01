@@ -311,6 +311,7 @@ Client -> server:
 { "type": "play", "id": "uuid" }
 { "type": "stop_all" }
 { "type": "set_master_volume", "value": 0.5 }
+{ "type": "set_sound_volume", "id": "uuid", "value": 0.5 }
 ```
 
 Unknown or malformed messages are ignored and logged.
@@ -324,6 +325,8 @@ Unknown or malformed messages are ignored and logged.
   a flat tile in the sound's color with name; sticky bottom Stop All in danger style, full width.
 - A tile highlights with the accent ring while its id is in `playing`.
   Tapping vibrates 10 ms where supported.
+- Long-press a tile to open a volume sheet for that sound.
+- A Rotate button switches to landscape; uses the Screen Orientation API when available, otherwise a CSS rotation.
 - On load the page calls `GET /auth/status`; if a PIN is required and the
   stored token is not valid it shows a PIN entry screen with a numeric keypad,
   otherwise it opens the WebSocket. On success it stores the token in
@@ -372,6 +375,8 @@ Left: "Soundboard" in `--text-dim`, then sound count. Right, in order:
 master volume (speaker glyph + 120 px range), Stop All (danger outline,
 solid danger while anything plays), Add (neutral filled), Remote (toggle,
 small accent dot when a phone is connected), Settings (toggle).
+
+Every volume control shows its value as a percent.
 
 ### Add sounds
 
