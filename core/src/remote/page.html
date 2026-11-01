@@ -72,7 +72,9 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   const pinScreen = $("pin"), dots = $("dots"), pad = $("pad"), pinMsg = $("pinmsg");
   const TOKEN_KEY = "sb_token";
   let ws = null, backoff = 500, state = null, pinBuf = "", masterDragging = false;
-  let retryTimer = null, booting = false;
+  let retryTimer = null, booting = false, lastMsg = Date.now();
+  // The desktop re-sends state every 15 s; silence past this means the socket is half-open.
+  const SILENCE_MS = 40000;
 
   const token = () => localStorage.getItem(TOKEN_KEY);
   const send = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
@@ -153,10 +155,19 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const sock = new WebSocket(`${proto}://${location.host}/ws${t ? "?token=" + encodeURIComponent(t) : ""}`);
     ws = sock;
-    sock.onopen = () => { if (ws !== sock) return; backoff = 500; dot.classList.add("on"); pinScreen.classList.remove("show"); };
-    sock.onmessage = (e) => { if (ws !== sock) return; const m = JSON.parse(e.data); if (m.type === "state") { state = m; render(); } };
+    lastMsg = Date.now();
+    sock.onopen = () => { if (ws !== sock) return; lastMsg = Date.now(); backoff = 500; dot.classList.add("on"); pinScreen.classList.remove("show"); };
+    sock.onmessage = (e) => { if (ws !== sock) return; lastMsg = Date.now(); const m = JSON.parse(e.data); if (m.type === "state") { state = m; render(); } };
     sock.onclose = () => { if (ws !== sock) return; dot.classList.remove("on"); ws = null; scheduleBoot(); };
     sock.onerror = () => { if (ws !== sock) return; sock.close(); };
+  }
+
+  // Forget the socket right away: on a half-open connection close() may not fire onclose for minutes.
+  function dropSocket() {
+    const sock = ws;
+    ws = null;
+    dot.classList.remove("on");
+    if (sock) { try { sock.close(); } catch { /* already closed */ } }
   }
 
   function drawDots() {
@@ -212,8 +223,16 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   master.addEventListener("change", commitMaster);
   master.addEventListener("pointercancel", () => { masterDragging = false; });
   stop.addEventListener("click", () => { buzz(); send({ type: "stop_all" }); });
+  setInterval(() => {
+    if (ws && Date.now() - lastMsg > SILENCE_MS) { dropSocket(); scheduleBoot(); }
+  }, 10000);
+  // Back from the background the old socket is often dead without knowing it; always reconnect.
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !ws) { clearTimeout(retryTimer); backoff = 500; boot(); }
+    if (document.hidden) return;
+    dropSocket();
+    clearTimeout(retryTimer);
+    backoff = 500;
+    boot();
   });
   boot();
 })();

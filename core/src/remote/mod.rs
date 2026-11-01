@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -29,6 +29,9 @@ pub const MANIFEST_JSON: &str = include_str!("manifest.json");
 pub const ICON_SVG: &str = include_str!("icon.svg");
 /// The requested port plus the next ten.
 pub const PORT_TRIES: u16 = 11;
+/// Every session re-sends the snapshot this often, so a phone can tell a live socket from a
+/// half-open one (its watchdog reconnects after 40 s of silence).
+pub const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// What the server needs from the application. Implemented by the Tauri app crate.
 pub trait RemoteHandler: Send + Sync + 'static {
@@ -266,8 +269,14 @@ async fn client_session(socket: WebSocket, ctx: AppCtx) {
         return;
     }
 
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                let json = serde_json::to_string(&ctx.handler.snapshot()).unwrap_or_default();
+                if sink.send(Message::Text(json.into())).await.is_err() { break; }
+            }
             ev = rx.recv() => match ev {
                 Ok(HubEvent::State(json)) => {
                     if sink.send(Message::Text(json.into())).await.is_err() { break; }
