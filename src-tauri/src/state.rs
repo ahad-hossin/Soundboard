@@ -39,6 +39,9 @@ pub struct App {
     pub addresses: Vec<String>,
     /// Per sound id: (file missing, image mtime in seconds). Refreshed by `refresh_files`.
     pub files: HashMap<String, (bool, u64)>,
+    /// Per sound id: how many times it has started this session. The UI and phone restart a
+    /// tile's progress sweep whenever this changes.
+    pub play_seq: HashMap<String, u64>,
 }
 
 pub type Shared = Arc<Mutex<App>>;
@@ -76,6 +79,9 @@ pub struct UiSound {
     pub image_path: Option<String>,
     pub image_rev: u64,
     pub missing_file: bool,
+    /// Clip length once decoded and cached.
+    pub duration_secs: Option<f32>,
+    pub play_seq: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -141,6 +147,7 @@ impl App {
             save_failed_reported: false,
             addresses: Vec::new(),
             files: HashMap::new(),
+            play_seq: HashMap::new(),
         };
         app.refresh_files();
         app
@@ -225,6 +232,7 @@ impl App {
             .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))?;
         // The file is evidently there (again); clear a stale missing flag.
         self.files.entry(sound.id.clone()).or_default().0 = false;
+        *self.play_seq.entry(sound.id.clone()).or_insert(0) += 1;
         let mut toasts = Vec::new();
         for dev in outcome.fallbacks {
             if self.warned_devices.insert(dev.clone()) {
@@ -268,6 +276,8 @@ impl App {
                         image_path: self.library.image_path(s).map(|p| p.to_string_lossy().into_owned()),
                         image_rev,
                         missing_file,
+                        duration_secs: self.engine.cached_duration(&s.id),
+                        play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                     }
                 })
                 .collect(),
@@ -290,6 +300,8 @@ impl App {
                     volume: s.volume,
                     has_image: s.image.is_some(),
                     color: tile_color(s),
+                    duration_secs: self.engine.cached_duration(&s.id),
+                    play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                 })
                 .collect(),
         }
