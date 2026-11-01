@@ -48,9 +48,17 @@ These rules apply to both the desktop UI and the phone page.
      focused element, a connected remote client, the primary action.
    - **Danger (red `#EF4444`)** means *stop or destroy*: Stop All, Delete.
    Sound images are the only other source of color, and they are the content.
+   Sound tiles are the exception: each sound carries one color from a fixed
+   ten-color retro palette (`core/src/palette.rs`), assigned least-used-first at
+   import and changeable from the context menu. Image tiles show it as a 3 px
+   bottom bar.
 3. **Images are the content.** A tile with an image is that image, edge to
    edge, with the name in a quiet label over a bottom scrim. A tile without an
    image is a flat surface with the name. Nothing else competes.
+   Sound tiles are the exception: each sound carries one color from a fixed
+   ten-color retro palette (`core/src/palette.rs`), assigned least-used-first at
+   import and changeable from the context menu. Image tiles show it as a 3 px
+   bottom bar.
 4. **Every element earns its place.** No welcome text, no feature blurbs, no
    icons that duplicate labels, no section headers over obvious groups. If an
    element has no action or no information, it is removed.
@@ -154,7 +162,8 @@ rendering and sending commands.
       "file": "airhorn.mp3",
       "image": "uuid.png",
       "volume": 1.0,
-      "hotkey": "Ctrl+Shift+Digit1"
+      "hotkey": "Ctrl+Shift+Digit1",
+      "color": "#FF595E"
     }
   ]
 }
@@ -283,7 +292,7 @@ Server -> client on connect and on every change:
 { "type": "state",
   "master_volume": 0.8,
   "playing": ["uuid"],
-  "sounds": [{ "id": "uuid", "name": "Airhorn", "volume": 1.0, "has_image": true }] }
+  "sounds": [{ "id": "uuid", "name": "Airhorn", "volume": 1.0, "has_image": true, "color": "#FF595E" }] }
 ```
 
 Client -> server:
@@ -301,8 +310,8 @@ Unknown or malformed messages are ignored and logged.
 - One HTML file with inline CSS and JS, no framework, embedded in the binary
   with `include_str!`. Same tokens and principles as the desktop UI.
 - Layout: top bar with connection dot, master volume slider; grid of square
-  tiles, 3 columns in portrait, image edge to edge with name scrim, or flat
-  surface with name; sticky bottom Stop All in danger style, full width.
+  tiles, 3 columns in portrait, image edge to edge with name scrim and a 3 px color bar, or
+  a flat tile in the sound's color with name; sticky bottom Stop All in danger style, full width.
 - A tile highlights with the accent ring while its id is in `playing`.
   Tapping vibrates 10 ms where supported.
 - On load the page calls `GET /auth/status`; if a PIN is required and the
@@ -332,13 +341,15 @@ Unknown or malformed messages are ignored and logged.
 ### Main view
 
 - Grid of square tiles, auto-fill columns, minimum tile width 120 px, 8 px gap.
-- Tile: image edge to edge (or flat `--surface-2`), name label bottom-left on a
+- Tile: image edge to edge with a 3 px bottom bar in the sound's color (or,
+  without an image, a flat tile in that color), name label bottom-left on a
   bottom scrim, hotkey badge top-right in monospace, thin volume slider
   revealed on hover along the bottom edge. Click plays. Accent ring while
   playing. Accent ring on keyboard focus.
 - Drag a tile to reorder. Order persists.
 - Right-click context menu: Rename, Set image, Remove image, Set hotkey,
-  Clear hotkey, Delete. Delete is in danger color and opens a small confirm
+  Clear hotkey, Change color (opens a popover of the ten palette swatches, current
+  one ringed), Delete. Delete is in danger color and opens a small confirm
   dialog.
 - Empty state: a single line in `--text-dim`, centered: "Drop audio files
   here, or Add." where Add is a button.
