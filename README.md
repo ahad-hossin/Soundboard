@@ -67,6 +67,7 @@ Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
 - [ ] Phone connects via QR, plays, sees playing highlight, Stop All works.
 - [ ] PIN required after setting; old phone token rejected after PIN change.
 - [ ] Drag reorder persists after restart.
+- [ ] Trim a clip; the tile's sweep matches the trimmed length; Reset restores the full clip.
 - [ ] Unplugging the configured device: next play falls back to default with one toast.
 - [ ] Settings > Startup > Start with Windows adds a Run entry; after a reboot the app starts hidden in the tray and hotkeys work.
 - [ ] Closing the window hides it to the tray; tray left click shows it; tray menu Stop All and Quit work.

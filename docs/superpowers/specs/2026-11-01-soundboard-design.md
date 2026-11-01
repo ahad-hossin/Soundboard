@@ -178,7 +178,8 @@ rendering and sending commands.
       "image": "uuid.png",
       "volume": 1.0,
       "hotkey": "Ctrl+Shift+Digit1",
-      "color": "#FF595E"
+      "color": "#FF595E",
+      "trim": { "start_secs": 0.25, "end_secs": 1.5 }
     }
   ]
 }
@@ -201,6 +202,10 @@ rendering and sending commands.
   which invalidates all existing phone tokens.
 - Default Stop All hotkey is `Ctrl+Shift+F12`. (`Ctrl+Shift+Escape` is owned by
   Windows Task Manager and cannot be registered.)
+- `trim` is an optional non-destructive crop: only `start_secs..end_secs` of
+  the file plays (desktop, hotkey and phone alike); the copied file is never
+  changed. Missing or `null` plays the whole file. A trim that is not finite,
+  starts below 0, or keeps less than 50 ms is dropped at load.
 - `startup` holds the three desktop startup options (see "Startup and tray");
   a missing key or field loads as `autostart` off, `start_minimized` off,
   `close_to_tray` on.
@@ -253,6 +258,10 @@ images/
 ### Decoded buffer cache
 
 - LRU keyed by sound id, evicting when total bytes exceed 200 MB.
+- Holds the full decoded file even for trimmed sounds, so the trim editor can
+  show the whole waveform. The engine keeps the trimmed slice per sound next to
+  it (dropped when the trim changes or the full buffer leaves the cache) and
+  plays that; a tile's `duration_secs` is the trimmed length.
 - Invalidated for a sound when its file is deleted.
 
 ### Testability
@@ -369,9 +378,10 @@ Unknown or malformed messages are ignored and logged.
   revealed on hover along the bottom edge. Click plays. Accent ring while
   playing. Accent ring on keyboard focus.
 - Drag a tile to reorder. Order persists.
-- Right-click context menu: Rename, Set image, Remove image, Set hotkey,
-  Clear hotkey, Change color (opens a popover of the ten palette swatches, current
-  one ringed), Delete. Delete is in danger color and opens a small confirm
+- Right-click context menu: Rename, Trim audio (reads "Trim audio (trimmed)"
+  while a trim is set), Set image, Remove image, Set hotkey, Clear hotkey,
+  Change color (opens a popover of the ten palette swatches, current one
+  ringed), Delete. Delete is in danger color and opens a small confirm
   dialog.
 - Empty state: a single line in `--text-dim`, centered: "Drop audio files
   here, or Add." where Add is a button.
@@ -395,6 +405,30 @@ Every volume control shows its value as a percent.
 - Each file is test-decoded before being copied in. Undecodable files are
   rejected with a toast naming the file; the others proceed.
 - Name defaults to the file name without extension.
+- Importing exactly one file (Add, the plus tile, or a single dropped file)
+  opens the trim editor for it, with Skip in place of Cancel. Importing several
+  files never opens it.
+
+### Trim editor
+
+- Centered dialog in the same shell as the other dialogs, 560 px wide. Sound
+  name at the top (13 px `--text`).
+- Waveform canvas 100 px tall: 600 peak bars in `--dim` on `--surface-2`
+  across the whole file. The selected range has an accent fill at 18 % opacity
+  and 2 px accent handles at both ends. Under the canvas a ruler marks every
+  second in `--mute` 11 px monospace (labels thin out on long clips).
+- Drag a handle to move it (start stays at least 50 ms before end); drag inside
+  the selection to move the whole range; press outside it to move the nearer
+  handle there. Handles take focus: arrow keys nudge by 10 ms, Shift+arrow by
+  100 ms.
+- Below: Start and End fields (`m:ss.mmm`, editable, monospace), the selection
+  length in `--dim`, then Play selection (Stop while playing), Reset, and
+  right-aligned Cancel (Skip after an import) and Save.
+- Play selection plays the range through the normal outputs at the sound's
+  volume as a hidden preview (not shown as playing; a new preview replaces the
+  last). Esc stops the preview and closes without saving.
+- Reset selects the whole file. Save stores the range, or removes the trim when
+  the selection covers the whole file within 10 ms.
 
 ### Set image
 
@@ -467,6 +501,8 @@ If the tray icon cannot be created the window is always shown.
   imported with collision renaming; image import validates magic bytes and
   replaces the old image; delete removes both files.
 - `audio::cache`: LRU order, eviction at byte cap, remove.
+- `audio::trim`: whole-frame slicing of stereo buffers, clamping past the end,
+  untrimmed passthrough shares the samples, waveform peaks normalized to 1.0.
 - `audio::decode`: generated wav decodes to the expected sample count.
 - `audio::engine` with `FakeBackend`: play fans out to each enabled device
   with gain = sound × master; missing named device falls back to default and
@@ -494,6 +530,8 @@ If the tray icon cannot be created the window is always shown.
 - Phone connects via QR, plays, sees playing highlight, Stop All works.
 - PIN required after setting; old phone token rejected after PIN change.
 - Drag reorder persists after restart.
+- Trim a clip; the tile's sweep matches the trimmed length; Reset restores the
+  full clip.
 
 ## Project layout
 
