@@ -134,15 +134,16 @@ describe("RemotePanel", () => {
       expect(screen.queryByRole("button", { name: "Allow through Windows Firewall" })).not.toBeInTheDocument();
     });
 
-    it("toasts when the allow action fails and keeps the button", async () => {
+    it("toasts the error when the allow action fails, re-checks and keeps the button", async () => {
       const user = userEvent.setup();
       vi.mocked(api.firewallStatus).mockResolvedValue({ exe: "C:\soundboard.exe", state: "blocked" });
-      vi.mocked(api.firewallAllow).mockRejectedValue("Could not change the firewall rule: cancelled or failed");
+      vi.mocked(api.firewallAllow).mockRejectedValue("cancelled or failed");
       render(<RemotePanel />);
       await user.click(await screen.findByRole("button", { name: "Allow through Windows Firewall" }));
       await vi.waitFor(() =>
-        expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "Could not change the firewall rule" }),
+        expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "cancelled or failed" }),
       );
+      await vi.waitFor(() => expect(api.firewallStatus).toHaveBeenCalledTimes(2));
       expect(screen.getByText("Windows Firewall: blocked")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Allow through Windows Firewall" })).toBeEnabled();
     });

@@ -41,8 +41,15 @@ export function RemotePanel() {
     setAllowing(true);
     try {
       setFirewall(await api.firewallAllow());
-    } catch {
-      toast("error", "Could not change the firewall rule");
+    } catch (e) {
+      // The backend's message says whether it was cancelled or the block remains. Either way
+      // the rules may have changed, so read them again.
+      toast("error", String(e));
+      try {
+        setFirewall(await api.firewallStatus());
+      } catch {
+        setFirewall({ exe: "", state: "unknown" });
+      }
     } finally {
       setAllowing(false);
     }

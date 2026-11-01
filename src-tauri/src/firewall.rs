@@ -2,6 +2,11 @@
 //!
 //! Both operations shell out to PowerShell: reading rules needs no elevation, adding one goes
 //! through a UAC prompt. Nothing here touches the `App` mutex.
+//!
+//! The exe path is never written into script text. PowerShell treats several Unicode quotes
+//! (U+2018 to U+201B) as string delimiters and Windows paths may contain them, so quoting is
+//! not safe. The check reads it from an environment variable; the elevated script carries it
+//! as a base64 literal it decodes itself.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,6 +21,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Name of the rule `allow` adds.
 const RULE_NAME: &str = "Soundboard";
+/// Environment variable that carries the exe path to the check script.
+const EXE_ENV: &str = "SB_EXE";
+
+const QUERY_SCRIPT: &str = "$exe = $env:SB_EXE; \
+     Get-NetFirewallApplicationFilter | Where-Object { $_.Program -ieq $exe } | Get-NetFirewallRule | \
+     Where-Object { $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' } | ForEach-Object { $_.Action }";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,13 +78,17 @@ pub fn parse_actions(output: &str) -> FirewallState {
     }
 }
 
-/// Single-quoted PowerShell string literal.
-fn ps_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+/// Windows PowerShell by full path, so a `powershell.exe` planted in the working directory or
+/// on a user-writable PATH entry is never started.
+fn powershell_exe() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("powershell"))
 }
 
 fn powershell() -> Command {
-    let mut cmd = Command::new("powershell");
+    let mut cmd = Command::new(powershell_exe());
     cmd.args(["-NoProfile", "-NonInteractive"]);
     #[cfg(windows)]
     {
@@ -83,19 +98,12 @@ fn powershell() -> Command {
     cmd
 }
 
-fn query_script(exe: &Path) -> String {
-    format!(
-        "Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -ieq {} }} | Get-NetFirewallRule | \
-         Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' }} | ForEach-Object {{ $_.Action }}",
-        ps_quote(&exe.to_string_lossy())
-    )
-}
-
 /// Reads the inbound rules that name this program. Any failure, or no answer within ten
 /// seconds, is `Unknown`.
 pub fn check(exe: &Path) -> FirewallState {
     let mut child = match powershell()
-        .args(["-Command", &query_script(exe)])
+        .env(EXE_ENV, exe)
+        .args(["-Command", QUERY_SCRIPT])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -133,29 +141,35 @@ pub fn check(exe: &Path) -> FirewallState {
 /// Status of the running executable; `Unknown` when its path cannot be determined.
 pub fn status() -> FirewallStatus {
     match exe_path() {
-        Some(exe) => FirewallStatus { state: check(&exe), exe: exe.to_string_lossy().into_owned() },
+        Some(exe) => status_of(&exe),
         None => FirewallStatus { exe: String::new(), state: FirewallState::Unknown },
     }
+}
+
+pub fn status_of(exe: &Path) -> FirewallStatus {
+    FirewallStatus { state: check(exe), exe: exe.to_string_lossy().into_owned() }
 }
 
 /// Script the elevated PowerShell runs: drop every inbound rule for this program (Windows
 /// creates Block rules named after the exe when its prompt is dismissed, and a block beats an
 /// allow), then add one allow rule for all profiles. Exits with netsh's code for the add.
+/// The path is a base64 literal decoded inside the script; that alphabet cannot break out of a
+/// string.
 fn elevated_script(exe: &Path) -> String {
+    let exe_b64 = base64(&utf16le(&exe.to_string_lossy()));
     format!(
-        "$exe = {}; \
+        "$exe = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{exe_b64}')); \
          netsh advfirewall firewall delete rule name=all dir=in \"program=$exe\" | Out-Null; \
          netsh advfirewall firewall add rule \"name={RULE_NAME}\" dir=in action=allow \"program=$exe\" enable=yes profile=any | Out-Null; \
-         exit $LASTEXITCODE",
-        ps_quote(&exe.to_string_lossy())
+         exit $LASTEXITCODE"
     )
 }
 
 /// Script run non-elevated: starts the elevated one through UAC and waits for it.
 fn launcher_script(exe: &Path) -> String {
-    let encoded = encode_command(&elevated_script(exe));
+    let encoded = base64(&utf16le(&elevated_script(exe)));
     format!(
-        "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+        "try {{ $p = Start-Process (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
          -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; exit $p.ExitCode }} \
          catch {{ exit 1 }}"
     )
@@ -177,10 +191,13 @@ pub fn allow(exe: &Path) -> Result<(), String> {
     }
 }
 
-/// `-EncodedCommand` payload: base64 of the UTF-16LE text, so no quoting survives to bite.
-fn encode_command(script: &str) -> String {
+fn utf16le(text: &str) -> Vec<u8> {
+    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// Standard base64, which is what `-EncodedCommand` and `FromBase64String` take.
+fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let n = u32::from(chunk[0]) << 16
@@ -197,6 +214,9 @@ fn encode_command(script: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both quote styles PowerShell treats as delimiters, a space and a non-ASCII letter.
+    const NASTY: &str = "C:\\Zo\u{eb}\u{2019}s \u{2018}It's\\soundboard.exe";
 
     #[test]
     fn a_block_rule_wins_over_an_allow_rule() {
@@ -230,31 +250,37 @@ mod tests {
     }
 
     #[test]
-    fn quotes_single_quotes_in_the_path() {
-        assert_eq!(ps_quote(r"C:\Bob's apps\a.exe"), r"'C:\Bob''s apps\a.exe'");
+    fn base64_of_utf16le() {
+        // "A" is 41 00, "AB" is 41 00 42 00, "ABC" is 41 00 42 00 43 00.
+        assert_eq!(base64(&utf16le("A")), "QQA=");
+        assert_eq!(base64(&utf16le("AB")), "QQBCAA==");
+        assert_eq!(base64(&utf16le("ABC")), "QQBCAEMA");
     }
 
     #[test]
-    fn base64_of_utf16le() {
-        // "A" is 41 00, "AB" is 41 00 42 00, "ABC" is 41 00 42 00 43 00.
-        assert_eq!(encode_command("A"), "QQA=");
-        assert_eq!(encode_command("AB"), "QQBCAA==");
-        assert_eq!(encode_command("ABC"), "QQBCAEMA");
+    fn the_path_never_appears_in_script_text() {
+        let exe = Path::new(NASTY);
+        let elevated = elevated_script(exe);
+        let launcher = launcher_script(exe);
+        for script in [QUERY_SCRIPT, elevated.as_str(), launcher.as_str()] {
+            assert!(!script.contains('\u{2019}') && !script.contains('\u{2018}'));
+            assert!(!script.contains("Zo") && !script.contains("soundboard.exe"));
+        }
+        // The only quoted text in the elevated script is the base64 literal, so the path
+        // cannot terminate a string early.
+        assert_eq!(elevated.matches('\'').count(), 2);
+        let literal = elevated.split('\'').nth(1).unwrap();
+        assert!(literal.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)));
+        assert_eq!(literal, base64(&utf16le(NASTY)));
     }
 
     #[test]
     #[ignore = "runs PowerShell against the real firewall"]
     fn check_reads_this_machine() {
-        let exe = exe_path().expect("exe path");
+        // FW_CHECK_EXE picks another program to look up.
+        let exe = std::env::var_os("FW_CHECK_EXE").map(PathBuf::from).or_else(exe_path).expect("exe path");
         let state = check(&exe);
         println!("{state:?} for {}", exe.display());
         assert_ne!(state, FirewallState::Unknown);
-    }
-
-    #[test]
-    fn scripts_embed_the_quoted_path() {
-        let exe = Path::new(r"C:\Program Files\Soundboard\soundboard.exe");
-        assert!(query_script(exe).contains(r"-ieq 'C:\Program Files\Soundboard\soundboard.exe'"));
-        assert!(elevated_script(exe).contains(r"$exe = 'C:\Program Files\Soundboard\soundboard.exe';"));
     }
 }

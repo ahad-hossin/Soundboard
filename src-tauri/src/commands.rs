@@ -13,7 +13,7 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri::{AppHandle, State};
 
 use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_warm, App, Ctx, UiState};
-use crate::firewall::{self, FirewallStatus};
+use crate::firewall::{self, FirewallState, FirewallStatus};
 use crate::{hotkeys_glue, remote_glue};
 
 /// Lock, mutate, unlock. The caller emits state afterwards.
@@ -570,13 +570,22 @@ pub async fn firewall_status() -> Result<FirewallStatus, String> {
         .map_err(|e| format!("Checking the firewall failed: {e}"))
 }
 
-/// Adds the allow rule through a UAC prompt, then reports the new status.
+/// Adds the allow rule through a UAC prompt, then re-checks. The status is read after every
+/// attempt, so the UI can refresh it; an error is returned when the attempt failed or when
+/// Windows still reports anything but "allowed" (typically another block rule).
 #[tauri::command]
 pub async fn firewall_allow() -> Result<FirewallStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let exe = firewall::exe_path().ok_or_else(|| "Could not find the Soundboard program file.".to_string())?;
-        firewall::allow(&exe).map_err(|e| format!("Could not change the firewall rule: {e}"))?;
-        Ok(firewall::status())
+        let attempt = firewall::allow(&exe);
+        let status = firewall::status_of(&exe);
+        if attempt.is_err() {
+            return Err("cancelled or failed".to_string());
+        }
+        if status.state != FirewallState::Allowed {
+            return Err("The rule was added but Windows still reports a block; remove other Soundboard rules in Windows Defender Firewall".to_string());
+        }
+        Ok(status)
     })
     .await
     .map_err(|e| format!("Changing the firewall rule failed: {e}"))?
