@@ -48,10 +48,18 @@ pub struct Engine<B: AudioBackend> {
     outputs: Outputs,
     active: Vec<Active>,
     next_instance: u64,
+    /// Name of the system default output at the last enumeration, so a Default
+    /// fallback never opens a second sink on a device that is already playing.
+    default_device: Option<String>,
+}
+
+fn default_name(devices: &[DeviceInfo]) -> Option<String> {
+    devices.iter().find(|d| d.is_default).map(|d| d.name.clone())
 }
 
 impl<B: AudioBackend> Engine<B> {
     pub fn new(backend: B, outputs: Outputs, master: f32, cache_bytes: usize) -> Self {
+        let default_device = default_name(&backend.devices());
         Self {
             backend,
             cache: BufferCache::new(cache_bytes),
@@ -59,6 +67,7 @@ impl<B: AudioBackend> Engine<B> {
             outputs,
             active: Vec::new(),
             next_instance: 1,
+            default_device,
         }
     }
 
@@ -70,6 +79,13 @@ impl<B: AudioBackend> Engine<B> {
         self.backend.devices()
     }
 
+    /// Re-enumerates devices, remembers which one is the default, and returns the list.
+    pub fn refresh_devices(&mut self) -> Vec<DeviceInfo> {
+        let devices = self.backend.devices();
+        self.default_device = default_name(&devices);
+        devices
+    }
+
     pub fn outputs(&self) -> &Outputs {
         &self.outputs
     }
@@ -79,6 +95,7 @@ impl<B: AudioBackend> Engine<B> {
         self.stop_all();
         self.backend.reset();
         self.outputs = outputs;
+        self.default_device = default_name(&self.backend.devices());
     }
 
     pub fn master(&self) -> f32 {
@@ -127,11 +144,31 @@ impl<B: AudioBackend> Engine<B> {
         let mut fallbacks = Vec::new();
         let mut sinks = 0;
         let mut last_err = None;
+        // True once a sink is open on the default device, whether it was reached by
+        // a Default fallback or by naming it. Prevents doubled playback on one device.
+        let mut played_default = false;
         for target in targets {
+            let is_default_name = matches!(&target, DeviceTarget::Named(n) if Some(n) == self.default_device.as_ref());
+            if is_default_name && played_default {
+                continue;
+            }
             let result = match self.backend.play(&target, buffer, gain) {
                 Err(AudioError::DeviceNotFound(name)) => {
                     fallbacks.push(name);
-                    self.backend.play(&DeviceTarget::Default, buffer, gain)
+                    if played_default {
+                        continue;
+                    }
+                    let r = self.backend.play(&DeviceTarget::Default, buffer, gain);
+                    if r.is_ok() {
+                        played_default = true;
+                    }
+                    r
+                }
+                Ok(h) => {
+                    if is_default_name {
+                        played_default = true;
+                    }
+                    Ok(h)
                 }
                 other => other,
             };
@@ -250,6 +287,51 @@ mod tests {
         assert_eq!(out.sinks, 1);
         assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
         assert!(matches!(e.backend().calls()[0], Call::Play { target: DeviceTarget::Default, .. }));
+    }
+
+    fn play_targets(e: &Engine<FakeBackend>) -> Vec<DeviceTarget> {
+        e.backend()
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Play { target, .. } => Some(target),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fallback_skipped_when_other_slot_is_the_default_device() {
+        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("Ghost".into()) }, 1.0);
+        let out = e.play_buffer("a", 1.0, &clip()).unwrap();
+        assert_eq!(play_targets(&e), vec![DeviceTarget::Named("Speakers".into())]);
+        assert_eq!(out.sinks, 1);
+        assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
+    }
+
+    #[test]
+    fn both_slots_missing_play_once_on_default() {
+        let mut e = engine(Outputs { speakers: Some("Ghost1".into()), virtual_mic: Some("Ghost2".into()) }, 1.0);
+        let out = e.play_buffer("a", 1.0, &clip()).unwrap();
+        assert_eq!(play_targets(&e), vec![DeviceTarget::Default]);
+        assert_eq!(out.sinks, 1);
+        assert_eq!(out.fallbacks, vec!["Ghost1".to_string(), "Ghost2".to_string()]);
+    }
+
+    #[test]
+    fn named_default_after_fallback_is_skipped() {
+        let mut e = engine(Outputs { speakers: Some("Ghost".into()), virtual_mic: Some("Speakers".into()) }, 1.0);
+        let out = e.play_buffer("a", 1.0, &clip()).unwrap();
+        assert_eq!(play_targets(&e), vec![DeviceTarget::Default]);
+        assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
+    }
+
+    #[test]
+    fn refresh_devices_returns_list() {
+        let mut e = engine(both(), 1.0);
+        let d = e.refresh_devices();
+        assert_eq!(d.len(), 2);
+        assert!(d[0].is_default);
     }
 
     #[test]

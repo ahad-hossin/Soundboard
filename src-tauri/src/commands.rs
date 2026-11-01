@@ -239,7 +239,7 @@ pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: A
         };
         let outputs = a.outputs();
         a.engine.set_outputs(outputs);
-        a.available_devices = a.engine.devices();
+        a.available_devices = a.engine.refresh_devices();
         a.warned_devices.clear();
         a.save();
     }
@@ -251,7 +251,7 @@ pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: A
 pub fn refresh_devices(app: AppHandle, ctx: State<'_, Ctx>) {
     {
         let mut a = lock(&ctx.shared);
-        a.available_devices = a.engine.devices();
+        a.available_devices = a.engine.refresh_devices();
     }
     emit_state(&app, &ctx);
 }
