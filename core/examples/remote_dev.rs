@@ -14,11 +14,12 @@ use soundboard_core::remote::{bind, router, serve, Hub, RemoteHandler};
 struct Dev {
     playing: Arc<Mutex<Vec<String>>>,
     seqs: Arc<Mutex<HashMap<String, u64>>>,
+    volumes: Arc<Mutex<HashMap<String, f32>>>,
     hub: Hub,
     pin_hash: Option<String>,
 }
 
-fn snapshot(playing: &[String], seqs: &HashMap<String, u64>) -> ServerMsg {
+fn snapshot(playing: &[String], seqs: &HashMap<String, u64>, volumes: &HashMap<String, f32>) -> ServerMsg {
     ServerMsg::State {
         master_volume: 0.8,
         playing: playing.to_vec(),
@@ -26,7 +27,7 @@ fn snapshot(playing: &[String], seqs: &HashMap<String, u64>) -> ServerMsg {
             .map(|i| RemoteSound {
                 id: format!("s{i}"),
                 name: format!("Sound {i}"),
-                volume: 1.0,
+                volume: volumes.get(&format!("s{i}")).copied().unwrap_or(1.0),
                 has_image: false,
                 color: PALETTE[i % PALETTE.len()].into(),
                 // Sound 7 plays with an unknown length to exercise the indeterminate bar.
@@ -39,14 +40,15 @@ fn snapshot(playing: &[String], seqs: &HashMap<String, u64>) -> ServerMsg {
 
 impl RemoteHandler for Dev {
     fn snapshot(&self) -> ServerMsg {
-        snapshot(&self.playing.lock().unwrap(), &self.seqs.lock().unwrap())
+        snapshot(&self.playing.lock().unwrap(), &self.seqs.lock().unwrap(), &self.volumes.lock().unwrap())
     }
     fn play(&self, id: &str) {
         println!("play {id}");
         self.playing.lock().unwrap().push(id.to_string());
         *self.seqs.lock().unwrap().entry(id.to_string()).or_insert(0) += 1;
         self.hub.broadcast_state(&self.snapshot());
-        let (playing, seqs, hub, id) = (self.playing.clone(), self.seqs.clone(), self.hub.clone(), id.to_string());
+        let (playing, seqs, volumes, hub, id) =
+            (self.playing.clone(), self.seqs.clone(), self.volumes.clone(), self.hub.clone(), id.to_string());
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let snap = {
@@ -54,7 +56,7 @@ impl RemoteHandler for Dev {
                 if let Some(i) = p.iter().position(|x| *x == id) {
                     p.remove(i);
                 }
-                snapshot(&p, &seqs.lock().unwrap())
+                snapshot(&p, &seqs.lock().unwrap(), &volumes.lock().unwrap())
             };
             hub.broadcast_state(&snap);
         });
@@ -66,6 +68,11 @@ impl RemoteHandler for Dev {
     }
     fn set_master_volume(&self, value: f32) {
         println!("master {value}");
+    }
+    fn set_sound_volume(&self, id: &str, value: f32) {
+        println!("sound {id} volume {value}");
+        self.volumes.lock().unwrap().insert(id.to_string(), value);
+        self.hub.broadcast_state(&self.snapshot());
     }
     fn image_path(&self, _id: &str) -> Option<PathBuf> {
         None
@@ -84,6 +91,7 @@ async fn main() {
     let dev = Arc::new(Dev {
         playing: Arc::new(Mutex::new(vec![])),
         seqs: Arc::new(Mutex::new(HashMap::new())),
+        volumes: Arc::new(Mutex::new(HashMap::new())),
         hub: hub.clone(),
         pin_hash: std::env::args().nth(1).map(|p| hash_pin(&p)),
     });

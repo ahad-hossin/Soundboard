@@ -39,6 +39,7 @@ pub trait RemoteHandler: Send + Sync + 'static {
     fn play(&self, id: &str);
     fn stop_all(&self);
     fn set_master_volume(&self, value: f32);
+    fn set_sound_volume(&self, id: &str, value: f32);
     fn image_path(&self, id: &str) -> Option<PathBuf>;
     fn pin_hash(&self) -> Option<String>;
     fn token_secret(&self) -> String;
@@ -311,6 +312,7 @@ fn handle_client_msg(ctx: &AppCtx, text: &str) {
         Ok(ClientMsg::Play { id }) => ctx.handler.play(&id),
         Ok(ClientMsg::StopAll) => ctx.handler.stop_all(),
         Ok(ClientMsg::SetMasterVolume { value }) => ctx.handler.set_master_volume(value.clamp(0.0, 1.0)),
+        Ok(ClientMsg::SetSoundVolume { id, value }) => ctx.handler.set_sound_volume(&id, value.clamp(0.0, 1.0)),
         Err(e) => log::debug!("ignoring remote message {text:?}: {e}"),
     }
 }
@@ -318,6 +320,43 @@ fn handle_client_msg(ctx: &AppCtx, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl RemoteHandler for Recorder {
+        fn snapshot(&self) -> ServerMsg {
+            ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![] }
+        }
+        fn play(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("play:{id}"));
+        }
+        fn stop_all(&self) {}
+        fn set_master_volume(&self, value: f32) {
+            self.0.lock().unwrap().push(format!("master:{value}"));
+        }
+        fn set_sound_volume(&self, id: &str, value: f32) {
+            self.0.lock().unwrap().push(format!("sound:{id}:{value}"));
+        }
+        fn image_path(&self, _id: &str) -> Option<PathBuf> {
+            None
+        }
+        fn pin_hash(&self) -> Option<String> {
+            None
+        }
+        fn token_secret(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn set_sound_volume_message_is_dispatched_and_clamped() {
+        let rec = Arc::new(Recorder(Mutex::new(vec![])));
+        let ctx = AppCtx { handler: rec.clone(), hub: Hub::new(), lockout: Arc::new(Mutex::new(Lockout::standard())) };
+        handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u1","value":0.4}"#);
+        handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u2","value":7.0}"#);
+        handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u3","value":-1.0}"#);
+        assert_eq!(*rec.0.lock().unwrap(), vec!["sound:u1:0.4", "sound:u2:1", "sound:u3:0"]);
+    }
 
     #[test]
     fn hub_broadcast_without_subscribers_is_fine() {

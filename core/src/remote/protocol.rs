@@ -26,6 +26,7 @@ pub enum ClientMsg {
     Play { id: String },
     StopAll,
     SetMasterVolume { value: f32 },
+    SetSoundVolume { id: String, value: f32 },
 }
 
 #[cfg(test)]
@@ -51,6 +52,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<ClientMsg>(r#"{"type":"play","id":"u1"}"#).unwrap(), ClientMsg::Play { id: "u1".into() });
         assert_eq!(serde_json::from_str::<ClientMsg>(r#"{"type":"stop_all"}"#).unwrap(), ClientMsg::StopAll);
         assert_eq!(serde_json::from_str::<ClientMsg>(r#"{"type":"set_master_volume","value":0.5}"#).unwrap(), ClientMsg::SetMasterVolume { value: 0.5 });
+        assert_eq!(
+            serde_json::from_str::<ClientMsg>(r#"{"type":"set_sound_volume","id":"u1","value":0.25}"#).unwrap(),
+            ClientMsg::SetSoundVolume { id: "u1".into(), value: 0.25 }
+        );
         assert!(serde_json::from_str::<ClientMsg>(r#"{"type":"explode"}"#).is_err());
     }
 }

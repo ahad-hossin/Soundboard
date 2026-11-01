@@ -34,6 +34,9 @@ impl RemoteHandler for FakeHandler {
     fn set_master_volume(&self, value: f32) {
         self.calls.lock().unwrap().push(format!("master:{value}"));
     }
+    fn set_sound_volume(&self, id: &str, value: f32) {
+        self.calls.lock().unwrap().push(format!("sound_volume:{id}:{value}"));
+    }
     fn image_path(&self, _id: &str) -> Option<PathBuf> {
         None
     }
