@@ -548,3 +548,14 @@ pub fn set_startup(
     emit_state(&app, &ctx);
     result.map_err(|e| format!("Could not change the Windows startup entry: {e}"))
 }
+
+/// The one external page the app opens: the author's Buy Me a Coffee page.
+pub const SUPPORT_URL: &str = "https://buymeacoffee.com/yokitori";
+
+#[tauri::command]
+pub fn open_support_page(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(SUPPORT_URL, None::<&str>)
+        .map_err(|e| format!("Could not open the browser: {e}"))
+}

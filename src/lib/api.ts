@@ -80,6 +80,7 @@ export const api = {
   setStartup: (autostart: boolean, startMinimized: boolean, closeToTray: boolean) =>
     invoke<void>("set_startup", { autostart, startMinimized, closeToTray }),
   restartRemote: () => invoke<void>("restart_remote"),
+  openSupportPage: () => invoke<void>("open_support_page"),
   onState: (cb: (s: UiState) => void): Promise<UnlistenFn> => listen<UiState>("state-changed", (e) => cb(e.payload)),
   onToast: (cb: (t: Toast) => void): Promise<UnlistenFn> => listen<Toast>("toast", (e) => cb(e.payload)),
 };

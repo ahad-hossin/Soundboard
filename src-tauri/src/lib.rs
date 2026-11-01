@@ -29,6 +29,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -137,6 +138,7 @@ pub fn run() {
             commands::set_pin,
             commands::restart_remote,
             commands::set_startup,
+            commands::open_support_page,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

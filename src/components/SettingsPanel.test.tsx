@@ -7,6 +7,7 @@ import { SettingsPanel } from "./SettingsPanel";
 vi.mock("../lib/api", () => ({
   api: {
     refreshDevices: vi.fn(),
+    openSupportPage: vi.fn().mockResolvedValue(undefined),
     setDevices: vi.fn(),
     setMicGain: vi.fn(),
     testTone: vi.fn(),
@@ -61,6 +62,12 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Ctrl+Shift+F12")).toBeInTheDocument();
     expect(screen.getByLabelText("PIN")).toBeInTheDocument();
     expect(screen.getByText(/local network only/i)).toBeInTheDocument();
+  });
+
+  it("has a Buy me a coffee button that opens the support page", () => {
+    render(<SettingsPanel />);
+    fireEvent.click(screen.getByText("Buy me a coffee"));
+    expect(api.openSupportPage).toHaveBeenCalled();
   });
 
   it("offers Remove when a PIN is set", () => {
