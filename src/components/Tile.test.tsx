@@ -72,6 +72,10 @@ describe("Tile", () => {
     const sweep = screen.getByTestId("sweep");
     expect(sweep.style.animationDuration).toBe("2.5s");
     expect(sweep).not.toHaveClass("sweep-pulse");
+    // Fill sits in an inset track so the tile's rounded corner cannot clip it.
+    const track = sweep.parentElement!;
+    expect(track).toHaveClass("inset-x-2", "bottom-1.5", "h-0.5", "bg-white/20");
+    expect(track).toHaveAttribute("aria-hidden", "true");
   });
 
   it("pulses an indeterminate bar when the duration is unknown", () => {

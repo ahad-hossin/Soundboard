@@ -48,12 +48,16 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         {playing && (
           <span
             key={sound.play_seq}
-            data-testid="sweep"
-            data-seq={sound.play_seq}
             aria-hidden
-            className={cx("pointer-events-none absolute bottom-0 left-0 h-0.5 bg-white/85", sound.duration_secs == null ? "sweep-pulse" : "sweep-bar")}
-            style={sound.duration_secs == null ? undefined : { animationDuration: `${sound.duration_secs}s` }}
-          />
+            className="pointer-events-none absolute inset-x-2 bottom-1.5 h-0.5 rounded-full bg-white/20"
+          >
+            <span
+              data-testid="sweep"
+              data-seq={sound.play_seq}
+              className={cx("block h-full rounded-full bg-white/85", sound.duration_secs == null ? "sweep-pulse" : "sweep-bar")}
+              style={sound.duration_secs == null ? undefined : { animationDuration: `${sound.duration_secs}s` }}
+            />
+          </span>
         )}
         {sound.hotkey && (
           <span className="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[11px] text-dim">
