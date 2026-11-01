@@ -72,6 +72,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   const pinScreen = $("pin"), dots = $("dots"), pad = $("pad"), pinMsg = $("pinmsg");
   const TOKEN_KEY = "sb_token";
   let ws = null, backoff = 500, state = null, pinBuf = "", masterDragging = false;
+  let retryTimer = null, booting = false;
 
   const token = () => localStorage.getItem(TOKEN_KEY);
   const send = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
@@ -120,25 +121,35 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     return r.json();
   }
 
+  function scheduleBoot() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(boot, nextBackoff());
+  }
+
   async function boot() {
+    if (booting) return;
+    booting = true;
     try {
       const s = await status();
       if (s.pin_required && !s.token_valid) { localStorage.removeItem(TOKEN_KEY); showPin(); return; }
       connect();
     } catch {
       dot.classList.remove("on");
-      setTimeout(boot, nextBackoff());
+      scheduleBoot();
+    } finally {
+      booting = false;
     }
   }
 
   function connect() {
     const t = token();
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/ws${t ? "?token=" + encodeURIComponent(t) : ""}`);
-    ws.onopen = () => { backoff = 500; dot.classList.add("on"); pinScreen.classList.remove("show"); };
-    ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "state") { state = m; render(); } };
-    ws.onclose = () => { dot.classList.remove("on"); ws = null; setTimeout(boot, nextBackoff()); };
-    ws.onerror = () => { if (ws) ws.close(); };
+    const sock = new WebSocket(`${proto}://${location.host}/ws${t ? "?token=" + encodeURIComponent(t) : ""}`);
+    ws = sock;
+    sock.onopen = () => { if (ws !== sock) return; backoff = 500; dot.classList.add("on"); pinScreen.classList.remove("show"); };
+    sock.onmessage = (e) => { if (ws !== sock) return; const m = JSON.parse(e.data); if (m.type === "state") { state = m; render(); } };
+    sock.onclose = () => { if (ws !== sock) return; dot.classList.remove("on"); ws = null; scheduleBoot(); };
+    sock.onerror = () => { if (ws !== sock) return; sock.close(); };
   }
 
   function drawDots() {
@@ -191,7 +202,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   master.addEventListener("input", () => send({ type: "set_master_volume", value: Number(master.value) }));
   stop.addEventListener("click", () => { buzz(); send({ type: "stop_all" }); });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !ws) { backoff = 500; boot(); }
+    if (!document.hidden && !ws) { clearTimeout(retryTimer); backoff = 500; boot(); }
   });
   boot();
 })();
