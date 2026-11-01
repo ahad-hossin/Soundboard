@@ -39,11 +39,16 @@ pub struct Devices {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteConfig {
+    #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]
     pub pin_hash: Option<String>,
     #[serde(default = "new_secret")]
     pub token_secret: String,
+}
+
+fn default_port() -> u16 {
+    DEFAULT_PORT
 }
 
 impl Default for RemoteConfig {
@@ -54,7 +59,9 @@ impl Default for RemoteConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default = "default_master")]
     pub master_volume: f32,
     #[serde(default)]
     pub devices: Devices,
@@ -70,11 +77,28 @@ fn default_stop_all() -> String {
     DEFAULT_STOP_ALL_HOTKEY.to_string()
 }
 
+fn default_version() -> u32 {
+    CONFIG_VERSION
+}
+
+fn default_master() -> f32 {
+    0.8
+}
+
+/// Clamps to 0..=1; a non-finite value (hand-edited file) becomes `fallback`.
+fn unit(v: f32, fallback: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             version: CONFIG_VERSION,
-            master_volume: 0.8,
+            master_volume: default_master(),
             devices: Devices::default(),
             remote: RemoteConfig::default(),
             stop_all_hotkey: default_stop_all(),
@@ -90,6 +114,18 @@ impl Config {
 
     pub fn sound_mut(&mut self, id: &str) -> Option<&mut Sound> {
         self.sounds.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Repairs values a hand-edited or newer file may carry.
+    fn sanitize(mut self) -> Self {
+        if self.version > CONFIG_VERSION {
+            log::warn!("config version {} is newer than this app ({CONFIG_VERSION}); unknown fields are ignored", self.version);
+        }
+        self.master_volume = unit(self.master_volume, default_master());
+        for s in &mut self.sounds {
+            s.volume = unit(s.volume, 1.0);
+        }
+        self
     }
 }
 
@@ -126,7 +162,7 @@ pub fn load(path: &Path) -> LoadOutcome {
         }
     };
     match serde_json::from_slice::<Config>(&bytes) {
-        Ok(cfg) => LoadOutcome::Loaded(cfg),
+        Ok(cfg) => LoadOutcome::Loaded(cfg.sanitize()),
         Err(e) => {
             log::warn!("config parse failed, backing up and starting fresh: {e}");
             recover(path)
@@ -241,6 +277,37 @@ mod tests {
         assert_eq!(cfg.sounds[0].image, None);
         assert_eq!(cfg.remote.port, DEFAULT_PORT);
         assert_eq!(cfg.stop_all_hotkey, DEFAULT_STOP_ALL_HOTKEY);
+    }
+
+    #[test]
+    fn missing_top_level_fields_load_with_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"remote":{"pin_hash":null},"sounds":[]}"#).unwrap();
+        match load(&path) {
+            LoadOutcome::Loaded(c) => {
+                assert_eq!(c.version, CONFIG_VERSION);
+                assert_eq!(c.master_volume, 0.8);
+                assert_eq!(c.remote.port, DEFAULT_PORT);
+                assert_eq!(c.remote.token_secret.len(), 44);
+            }
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn out_of_range_volumes_are_clamped_at_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let json = r#"{"version":2,"master_volume":3.5,"sounds":[
+            {"id":"a","name":"A","file":"a.wav","volume":-1},
+            {"id":"b","name":"B","file":"b.wav","volume":1.7}]}"#;
+        fs::write(&path, json).unwrap();
+        let c = load(&path).into_config();
+        assert_eq!(c.version, 2, "newer version is kept, only warned about");
+        assert_eq!(c.master_volume, 1.0);
+        assert_eq!(c.sounds[0].volume, 0.0);
+        assert_eq!(c.sounds[1].volume, 1.0);
     }
 
     #[test]

@@ -31,6 +31,19 @@ fn display_name(path: &Path) -> String {
     path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string()
 }
 
+/// Name inside the library folders that import can never create (no audio/image extension).
+const INVALID_NAME: &str = "__invalid__";
+
+/// `dir/name`, unless `name` (read from config, possibly hand-edited) could escape `dir`;
+/// then a path inside `dir` that cannot exist, so reads miss and deletes do nothing.
+fn contained(dir: PathBuf, name: &str) -> PathBuf {
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
+        log::warn!("ignoring unsafe library file name {name:?}");
+        return dir.join(INVALID_NAME);
+    }
+    dir.join(name)
+}
+
 fn remove_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -64,11 +77,11 @@ impl Library {
     }
 
     pub fn sound_path(&self, sound: &Sound) -> PathBuf {
-        self.sounds_dir().join(&sound.file)
+        contained(self.sounds_dir(), &sound.file)
     }
 
     pub fn image_path(&self, sound: &Sound) -> Option<PathBuf> {
-        sound.image.as_ref().map(|i| self.images_dir().join(i))
+        sound.image.as_ref().map(|i| contained(self.images_dir(), i))
     }
 
     /// Validates, copies into `sounds/` (renaming on collision) and returns a new `Sound`.
@@ -248,6 +261,29 @@ mod tests {
         assert!(!lib.sound_path(&s).exists());
         assert!(!lib.image_path(&s).unwrap().exists());
         lib.delete_sound(&s).unwrap(); // idempotent
+    }
+
+    #[test]
+    fn unsafe_stored_names_stay_inside_the_library() {
+        let (d, lib, _) = setup();
+        let outside = d.path().join("secret.wav");
+        std::fs::write(&outside, "x").unwrap();
+        for bad in ["../secret.wav", "..\\secret.wav", "sub/x.wav", "C:\\Windows\\win.ini", "C:x.wav", ".."] {
+            let s = Sound {
+                id: "i".into(),
+                name: "n".into(),
+                file: bad.into(),
+                image: Some(bad.into()),
+                volume: 1.0,
+                hotkey: None,
+            };
+            assert_eq!(lib.sound_path(&s), lib.sounds_dir().join(INVALID_NAME), "{bad}");
+            assert_eq!(lib.image_path(&s), Some(lib.images_dir().join(INVALID_NAME)), "{bad}");
+            lib.delete_sound(&s).unwrap();
+        }
+        assert!(outside.exists(), "delete never reaches outside the library");
+        let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None };
+        assert_eq!(lib.sound_path(&ok), lib.sounds_dir().join("clip (2).wav"));
     }
 
     #[test]
