@@ -13,6 +13,7 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri::{AppHandle, State};
 
 use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_warm, App, Ctx, UiState};
+use crate::firewall::{self, FirewallStatus};
 use crate::{hotkeys_glue, remote_glue};
 
 /// Lock, mutate, unlock. The caller emits state afterwards.
@@ -558,4 +559,25 @@ pub fn open_support_page(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(SUPPORT_URL, None::<&str>)
         .map_err(|e| format!("Could not open the browser: {e}"))
+}
+
+/// Reads the firewall rules for this program. The PowerShell query takes a second or so, so it
+/// runs on the blocking pool; no `App` lock is involved.
+#[tauri::command]
+pub async fn firewall_status() -> Result<FirewallStatus, String> {
+    tauri::async_runtime::spawn_blocking(firewall::status)
+        .await
+        .map_err(|e| format!("Checking the firewall failed: {e}"))
+}
+
+/// Adds the allow rule through a UAC prompt, then reports the new status.
+#[tauri::command]
+pub async fn firewall_allow() -> Result<FirewallStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let exe = firewall::exe_path().ok_or_else(|| "Could not find the Soundboard program file.".to_string())?;
+        firewall::allow(&exe).map_err(|e| format!("Could not change the firewall rule: {e}"))?;
+        Ok(firewall::status())
+    })
+    .await
+    .map_err(|e| format!("Changing the firewall rule failed: {e}"))?
 }

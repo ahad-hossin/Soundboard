@@ -1,4 +1,5 @@
 mod commands;
+mod firewall;
 mod hotkeys_glue;
 mod remote_glue;
 mod state;
@@ -139,6 +140,8 @@ pub fn run() {
             commands::restart_remote,
             commands::set_startup,
             commands::open_support_page,
+            commands::firewall_status,
+            commands::firewall_allow,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
