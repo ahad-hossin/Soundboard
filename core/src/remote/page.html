@@ -41,7 +41,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
 .stop{width:100%;height:44px;border:1px solid var(--danger);border-radius:var(--radius);background:transparent;color:var(--danger);font-weight:500}
 .stop.on{background:var(--danger);color:var(--text)}
 .empty{color:var(--dim);text-align:center;padding:48px 16px}
-#pin{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+#pin{position:fixed;inset:0;z-index:20;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:20px}
 #pin.show{display:flex}
 .dots{display:flex;gap:10px;height:12px}
 .dots i{width:12px;height:12px;border-radius:50%;border:1px solid var(--dim)}
@@ -52,6 +52,20 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
 .pad button.ok{color:var(--accent);border-color:var(--accent)}
 #pinmsg{color:var(--danger);height:16px;font-size:12px}
 .hidden{display:none}
+.btn{flex-shrink:0;height:28px;padding:0 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);font-size:11px}
+.btn:active{background:var(--surface-2)}
+.pct{flex-shrink:0;width:36px;text-align:right;color:var(--dim);font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.tile{-webkit-touch-callout:none}
+#backdrop{position:fixed;inset:0;z-index:10;background:rgba(0,0,0,.55);display:none}
+#backdrop.show{display:block}
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:11;display:none;flex-direction:column;gap:12px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);border-radius:12px 12px 0 0}
+#sheet.show{display:flex}
+#sheetname{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheetrow{display:flex;align-items:center;gap:12px}
+.done{width:100%;height:44px;background:var(--surface-2);font-size:13px}
+@media (orientation:landscape) and (max-height:600px){.grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}}
+#app.rotated{position:fixed;top:0;left:100vw;width:100vh;width:100dvh;height:100vw;transform:rotate(90deg);transform-origin:top left;overflow:hidden}
+#app.rotated .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 </style>
 </head>
 <body>
@@ -59,23 +73,39 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   <header>
     <span id="dot" class="dot" title="Connection"></span>
     <input id="master" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Master volume">
+    <span id="mpct" class="pct">80%</span>
+    <button id="rotate" class="btn" type="button">Rotate</button>
   </header>
   <main>
     <div id="grid" class="grid"></div>
     <div id="empty" class="empty hidden">No sounds yet. Add some on the desktop app.</div>
   </main>
   <footer><button id="stop" class="stop" type="button">Stop All</button></footer>
-</div>
-<div id="pin">
-  <div class="dots" id="dots"></div>
-  <div id="pinmsg"></div>
-  <div class="pad" id="pad"></div>
+  <div id="backdrop"></div>
+  <div id="sheet" role="dialog" aria-label="Sound volume">
+    <div id="sheetname"></div>
+    <div class="sheetrow">
+      <input id="sheetvol" type="range" min="0" max="100" step="1" value="100" aria-label="Sound volume">
+      <span id="sheetpct" class="pct">100%</span>
+    </div>
+    <button id="sheetdone" class="btn done" type="button">Done</button>
+  </div>
+  <div id="pin">
+    <div class="dots" id="dots"></div>
+    <div id="pinmsg"></div>
+    <div class="pad" id="pad"></div>
+  </div>
 </div>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const grid = $("grid"), empty = $("empty"), master = $("master"), stop = $("stop"), dot = $("dot");
   const pinScreen = $("pin"), dots = $("dots"), pad = $("pad"), pinMsg = $("pinmsg");
+  const mpct = $("mpct"), rotateBtn = $("rotate"), app = $("app");
+  const backdrop = $("backdrop"), sheet = $("sheet"), sheetName = $("sheetname"), sheetVol = $("sheetvol"), sheetPct = $("sheetpct"), sheetDone = $("sheetdone");
+  const LONG_PRESS_MS = 450, MOVE_SLOP = 8, SEND_EVERY_MS = 80;
+  const ROTATE_KEY = "sb_rotate";
+  let sheetId = null, sheetDragging = false, lastSheetSend = 0, suppressClick = false;
   const TOKEN_KEY = "sb_token";
   let ws = null, backoff = 500, state = null, pinBuf = "", masterDragging = false;
   let retryTimer = null, booting = false, lastMsg = Date.now();
@@ -85,6 +115,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   const token = () => localStorage.getItem(TOKEN_KEY);
   const send = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
   const buzz = () => { if (navigator.vibrate) navigator.vibrate(10); };
+  const pct = (v) => `${Math.round(v * 100)}%`;
   const nextBackoff = () => { const b = backoff; backoff = Math.min(backoff * 2, 8000); return b; };
 
   // Tile decoration for sounds without an image; mirrors `src/lib/decor.ts`.
@@ -134,7 +165,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
 
   function render() {
     if (!state) return;
-    if (!masterDragging) master.value = state.master_volume;
+    if (!masterDragging) { master.value = state.master_volume; mpct.textContent = pct(state.master_volume); }
     empty.classList.toggle("hidden", state.sounds.length > 0);
     const playing = new Set(state.playing);
     stop.classList.toggle("on", playing.size > 0);
@@ -152,7 +183,12 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
         el.type = "button";
         el.className = "tile";
         el.dataset.id = s.id;
-        el.addEventListener("click", () => { el.classList.add("playing"); buzz(); send({ type: "play", id: s.id }); });
+        el.addEventListener("click", () => {
+          // The click that ends a long-press must not also play the sound.
+          if (suppressClick) { suppressClick = false; return; }
+          el.classList.add("playing"); buzz(); send({ type: "play", id: el.dataset.id });
+        });
+        wireLongPress(el);
         const name = document.createElement("span");
         name.className = "name";
         el.appendChild(name);
@@ -177,7 +213,100 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
       if (el === cursor) cursor = cursor.nextElementSibling;
       else grid.insertBefore(el, cursor);
     }
+    syncSheet();
   }
+
+  // Long-press a tile (450 ms, moving less than 8 px) to open the volume sheet instead of playing.
+  function wireLongPress(el) {
+    let timer = null, x0 = 0, y0 = 0;
+    const cancel = () => { clearTimeout(timer); timer = null; };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      cancel();
+      x0 = e.clientX; y0 = e.clientY;
+      timer = setTimeout(() => { timer = null; suppressClick = true; openSheet(el.dataset.id); }, LONG_PRESS_MS);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > MOVE_SLOP) cancel();
+    });
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) el.addEventListener(ev, cancel);
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+  // With a mouse the release lands on the backdrop and no click reaches the tile, so a stale
+  // suppress flag would eat the next real tap; clear it shortly after any release.
+  const clearSuppressSoon = () => { if (suppressClick) setTimeout(() => { suppressClick = false; }, 300); };
+  document.addEventListener("pointerup", clearSuppressSoon, true);
+  document.addEventListener("pointercancel", clearSuppressSoon, true);
+
+  function soundById(id) { return state && state.sounds.find((s) => s.id === id); }
+
+  function openSheet(id) {
+    const s = soundById(id);
+    if (!s) return;
+    sheetId = id;
+    sheetDragging = false;
+    sheetName.textContent = s.name;
+    sheetVol.value = Math.round(s.volume * 100);
+    sheetPct.textContent = pct(s.volume);
+    backdrop.classList.add("show");
+    sheet.classList.add("show");
+    buzz();
+  }
+
+  function closeSheet() {
+    sheetId = null;
+    sheetDragging = false;
+    backdrop.classList.remove("show");
+    sheet.classList.remove("show");
+  }
+
+  // Called after every state push: follow the sound's name/volume unless the user is dragging.
+  function syncSheet() {
+    if (sheetId === null) return;
+    const s = soundById(sheetId);
+    if (!s) { closeSheet(); return; }
+    sheetName.textContent = s.name;
+    if (!sheetDragging) { sheetVol.value = Math.round(s.volume * 100); sheetPct.textContent = pct(s.volume); }
+  }
+
+  function sendSheetVolume() {
+    if (sheetId === null) return;
+    const value = Number(sheetVol.value) / 100;
+    const s = soundById(sheetId);
+    if (s) s.volume = value;
+    lastSheetSend = Date.now();
+    send({ type: "set_sound_volume", id: sheetId, value });
+  }
+  sheetVol.addEventListener("pointerdown", () => { sheetDragging = true; });
+  sheetVol.addEventListener("input", () => {
+    sheetPct.textContent = `${sheetVol.value}%`;
+    if (Date.now() - lastSheetSend >= SEND_EVERY_MS) sendSheetVolume();
+  });
+  sheetVol.addEventListener("change", () => { sendSheetVolume(); sheetDragging = false; });
+  sheetVol.addEventListener("pointerup", () => { sheetDragging = false; });
+  sheetVol.addEventListener("pointercancel", () => { sheetDragging = false; });
+  sheetDone.addEventListener("click", closeSheet);
+  backdrop.addEventListener("click", closeSheet);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+  // Rotate: try a real orientation lock (installed PWA / fullscreen); otherwise rotate the page with CSS.
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } },
+    del: (k) => { try { localStorage.removeItem(k); } catch { /* storage blocked */ } },
+  };
+  const setRotated = (on) => { app.classList.toggle("rotated", on); if (on) store.set(ROTATE_KEY, "1"); else store.del(ROTATE_KEY); };
+  if (store.get(ROTATE_KEY) === "1") setRotated(true);
+  rotateBtn.addEventListener("click", async () => {
+    buzz();
+    if (app.classList.contains("rotated")) { setRotated(false); return; }
+    const o = screen.orientation;
+    const landscape = o && o.type ? o.type.startsWith("landscape") : window.innerWidth > window.innerHeight;
+    if (o && typeof o.lock === "function") {
+      try { await o.lock(landscape ? "portrait" : "landscape"); return; } catch { /* not allowed here; fall back */ }
+    }
+    setRotated(true);
+  });
 
   async function status() {
     const t = token();
@@ -282,6 +411,7 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   // Send once per gesture, not per input tick: each send is a config change on the desktop.
   const commitMaster = () => { masterDragging = false; send({ type: "set_master_volume", value: Number(master.value) }); };
   master.addEventListener("pointerdown", () => { masterDragging = true; });
+  master.addEventListener("input", () => { mpct.textContent = pct(Number(master.value)); });
   master.addEventListener("pointerup", commitMaster);
   master.addEventListener("change", commitMaster);
   master.addEventListener("pointercancel", () => { masterDragging = false; });
