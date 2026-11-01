@@ -29,7 +29,7 @@ or game voice chat hears.
 ### Deferred (not v1)
 
 - Pages / folders / tabs of sounds.
-- "Cut previous sound" overlap mode (v1 always overlaps).
+- "Cut previous sound" mode that stops *other* sounds when one plays (v1 overlaps different sounds).
 - YouTube/URL download, mic recording, clip trimming.
 - MIDI / Stream Deck integration.
 - HTTPS on the remote server.
@@ -212,7 +212,8 @@ images/
      gain `sound.volume * master_volume`.
   3. Record the returned sink handles under a play instance in the engine.
   4. Emit `state-changed` with `playing: [sound_id, ...]`.
-- Sounds overlap: each play creates fresh sinks. Finished sinks are reaped by a
+- Different sounds overlap. Playing a sound that is already playing stops its
+  current sinks first and restarts it. Finished sinks are reaped by a
   background thread that polls every 100 ms and emits `state-changed` when the
   playing set changes.
 - `stop_all()` stops every active sink and emits `state-changed`.

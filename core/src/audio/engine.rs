@@ -253,10 +253,15 @@ impl<B: AudioBackend> Engine<B> {
         true
     }
 
+    /// Plays `buffer` on every output. A sound that is already playing is stopped first, so
+    /// replaying restarts it; different sounds overlap.
     pub fn play_buffer(&mut self, sound_id: &str, sound_volume: f32, buffer: &DecodedBuffer) -> Result<PlayOutcome, AudioError> {
         let targets = self.outputs.targets();
         if targets.is_empty() {
             return Err(AudioError::NoOutputs);
+        }
+        if sound_id != TEST_TONE_ID {
+            self.stop_sound(sound_id);
         }
         let sound_volume = sound_volume.clamp(0.0, 1.0);
         let gain = sound_volume * self.master;
@@ -308,6 +313,19 @@ impl<B: AudioBackend> Engine<B> {
             }
         }
         Ok(PlayOutcome { instance, sinks, fallbacks })
+    }
+
+    /// Stops every active sink of one sound.
+    fn stop_sound(&mut self, sound_id: &str) {
+        let backend = &self.backend;
+        self.active.retain(|a| {
+            if a.sound_id == sound_id {
+                backend.stop(a.handle);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn stop_all(&mut self) {
@@ -571,6 +589,44 @@ mod tests {
         assert!(e.playing().is_empty());
         assert!(e.backend().calls().contains(&Call::Reset));
         assert_eq!(e.outputs().targets().len(), 1);
+    }
+
+    #[test]
+    fn replaying_a_sound_restarts_it() {
+        let mut e = engine(both(), 1.0);
+        e.play_buffer("a", 1.0, &clip()).unwrap();
+        let first = e.backend().handles();
+        assert_eq!(first.len(), 2);
+        e.play_buffer("a", 1.0, &clip()).unwrap();
+        let calls = e.backend().calls();
+        for h in &first {
+            assert!(calls.contains(&Call::Stop(*h)), "first play's sink {h:?} stopped");
+        }
+        assert_eq!(calls.iter().filter(|c| matches!(c, Call::Play { .. })).count(), 4);
+        assert_eq!(calls.iter().filter(|c| matches!(c, Call::Stop(_))).count(), 2);
+        assert_eq!(e.playing(), vec!["a".to_string()]);
+        e.stop_all();
+        let stops = e.backend().calls().iter().filter(|c| matches!(c, Call::Stop(_))).count();
+        assert_eq!(stops, 4, "only the second play's sinks were still active");
+    }
+
+    #[test]
+    fn different_sounds_still_overlap() {
+        let mut e = engine(both(), 1.0);
+        e.play_buffer("a", 1.0, &clip()).unwrap();
+        e.play_buffer("b", 1.0, &clip()).unwrap();
+        assert!(!e.backend().calls().iter().any(|c| matches!(c, Call::Stop(_))));
+        assert_eq!(e.playing(), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn test_tones_do_not_cut_each_other() {
+        let mut e = engine(both(), 1.0);
+        let speakers = DeviceTarget::Named("Speakers".into());
+        e.test_tone(&speakers).unwrap();
+        e.test_tone(&speakers).unwrap();
+        e.play_buffer(TEST_TONE_ID, 1.0, &clip()).unwrap();
+        assert!(!e.backend().calls().iter().any(|c| matches!(c, Call::Stop(_))));
     }
 
     #[test]
