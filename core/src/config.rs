@@ -76,6 +76,29 @@ impl Default for RemoteConfig {
     }
 }
 
+/// Desktop startup behaviour. `autostart` mirrors the Windows Run key entry the app registers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Startup {
+    #[serde(default)]
+    pub autostart: bool,
+    /// Hide the main window at launch; only the tray icon shows.
+    #[serde(default)]
+    pub start_minimized: bool,
+    /// Closing the window hides it to the tray instead of quitting.
+    #[serde(default = "yes")]
+    pub close_to_tray: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Startup {
+    fn default() -> Self {
+        Self { autostart: false, start_minimized: false, close_to_tray: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_version")]
@@ -88,6 +111,8 @@ pub struct Config {
     pub remote: RemoteConfig,
     #[serde(default = "default_stop_all")]
     pub stop_all_hotkey: String,
+    #[serde(default)]
+    pub startup: Startup,
     #[serde(default)]
     pub sounds: Vec<Sound>,
 }
@@ -126,6 +151,7 @@ impl Default for Config {
             devices: Devices::default(),
             remote: RemoteConfig::default(),
             stop_all_hotkey: default_stop_all(),
+            startup: Startup::default(),
             sounds: Vec::new(),
         }
     }
@@ -253,6 +279,28 @@ mod tests {
         assert_eq!(c.remote.token_secret.len(), 44, "32 random bytes base64");
         assert_eq!(c.devices.microphone, None);
         assert_eq!(c.devices.mic_gain, 1.0);
+        assert_eq!(c.startup, Startup { autostart: false, start_minimized: false, close_to_tray: true });
+    }
+
+    #[test]
+    fn config_without_startup_key_closes_to_tray() {
+        let c = load_json(r#"{"sounds":[]}"#);
+        assert!(c.startup.close_to_tray);
+        assert!(!c.startup.autostart);
+        assert!(!c.startup.start_minimized);
+        let partial = load_json(r#"{"startup":{"autostart":true}}"#);
+        assert!(partial.startup.autostart);
+        assert!(partial.startup.close_to_tray, "missing close_to_tray defaults to on");
+    }
+
+    #[test]
+    fn startup_round_trips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = Config::default();
+        cfg.startup = Startup { autostart: true, start_minimized: true, close_to_tray: false };
+        save(&path, &cfg).unwrap();
+        assert_eq!(load(&path).into_config().startup, cfg.startup);
     }
 
     #[test]
