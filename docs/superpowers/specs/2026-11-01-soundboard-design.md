@@ -270,6 +270,7 @@ images/
 | GET | `/` | none | Phone page HTML |
 | GET | `/manifest.json`, `/icon.svg` | none | PWA install |
 | GET | `/img/{id}` | none | Sound image bytes |
+| GET | `/auth/status?token=` | none | `{pin_required, token_valid}` so the page can tell "needs PIN" from "server down" |
 | POST | `/auth` | none | Body `{pin}`; returns `{token}` or 401/429 |
 | GET | `/ws?token=...` | token (if PIN set) | WebSocket |
 
@@ -303,9 +304,10 @@ Unknown or malformed messages are ignored and logged.
   surface with name; sticky bottom Stop All in danger style, full width.
 - A tile highlights with the accent ring while its id is in `playing`.
   Tapping vibrates 10 ms where supported.
-- If the WebSocket connect is rejected with 401, show a PIN entry screen with
-  a numeric keypad. On success store the token in `localStorage` and
-  reconnect.
+- On load the page calls `GET /auth/status`; if a PIN is required and the
+  stored token is not valid it shows a PIN entry screen with a numeric keypad,
+  otherwise it opens the WebSocket. On success it stores the token in
+  `localStorage` and connects.
 - Auto-reconnect with backoff (0.5 s doubling to 8 s) on socket close.
 - Includes a web app manifest so it can be added to the home screen and run
   full-screen. `touch-action: manipulation`, no text selection.
