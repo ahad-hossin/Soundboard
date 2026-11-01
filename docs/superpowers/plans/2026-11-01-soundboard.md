@@ -199,7 +199,7 @@ pub fn run() {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Soundboard",
   "version": "0.1.0",
-  "identifier": "co.carbonweb.soundboard",
+  "identifier": "com.yokitori.soundboard",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -4546,7 +4546,7 @@ Expected: window opens. In the webview devtools console (right-click, Inspect, o
 ```js
 const { invoke } = window.__TAURI__ ?? await import("@tauri-apps/api/core");
 ```
-If `window.__TAURI__` is undefined, skip the console check; the UI tasks verify commands. Confirm instead that `%APPDATA%\co.carbonweb.soundboard\config.json` now exists with `"version": 1`, and that the remote page loads at `http://localhost:7331` in a browser (serving the Task 11 page with an empty grid).
+If `window.__TAURI__` is undefined, skip the console check; the UI tasks verify commands. Confirm instead that `%APPDATA%\com.yokitori.soundboard\config.json` now exists with `"version": 1`, and that the remote page loads at `http://localhost:7331` in a browser (serving the Task 11 page with an empty grid).
 
 Stop the dev process.
 
@@ -6051,7 +6051,7 @@ to CABLE Input.
 
 ## Data
 
-Settings and copied files live in `%APPDATA%\co.carbonweb.soundboard\`.
+Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
 
 ## Manual checklist
 

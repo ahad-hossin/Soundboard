@@ -181,7 +181,7 @@ rendering and sending commands.
 ### Storage location
 
 Tauri `app_data_dir()`, which on Windows is
-`%APPDATA%\co.carbonweb.soundboard\`:
+`%APPDATA%\com.yokitori.soundboard\`:
 
 ```
 config.json

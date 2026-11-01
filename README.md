@@ -53,7 +53,7 @@ to CABLE Input.
 
 ## Data
 
-Settings and copied files live in `%APPDATA%\co.carbonweb.soundboard\`.
+Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
 
 ## Manual checklist
 

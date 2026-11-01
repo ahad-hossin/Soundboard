@@ -2,6 +2,7 @@
 name = "soundboard"
 version = "0.1.0"
 edition = "2021"
+authors = ["Ahad Hossin (Yokitori)"]
 
 [lib]
 name = "soundboard_lib"
