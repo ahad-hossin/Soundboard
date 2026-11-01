@@ -251,32 +251,62 @@ pub fn set_stop_all_hotkey(accelerator: String, app: AppHandle, ctx: State<'_, C
     Ok(())
 }
 
+/// Switches all three device slots and restarts mic passthrough (inside `set_outputs`).
 #[tauri::command]
-pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) {
-    {
+pub fn set_devices(
+    speakers: Option<String>,
+    virtual_mic: Option<String>,
+    microphone: Option<String>,
+    app: AppHandle,
+    ctx: State<'_, Ctx>,
+) {
+    let toast = {
         let mut a = lock(&ctx.shared);
         a.config.devices = Devices {
             speakers: speakers.filter(|s| !s.is_empty()),
             virtual_mic: virtual_mic.filter(|s| !s.is_empty()),
+            microphone: microphone.filter(|s| !s.is_empty()),
+            mic_gain: a.config.devices.mic_gain,
         };
         let outputs = a.outputs();
         a.engine.set_outputs(outputs);
-        a.available_devices = a.engine.refresh_devices();
+        // `set_outputs` already re-read the default device; only the cached lists need updating.
+        a.refresh_device_lists();
         a.warned_devices.clear();
+        a.mark_dirty();
+        a.passthrough_toast()
+    };
+    if let Some(t) = toast {
+        emit_toast(&app, "error", t);
+    }
+    emit_state(&app, &ctx);
+}
+
+#[tauri::command]
+pub fn set_mic_gain(value: f32, app: AppHandle, ctx: State<'_, Ctx>) {
+    {
+        let mut a = lock(&ctx.shared);
+        a.engine.set_mic_gain(value);
+        a.config.devices.mic_gain = a.engine.outputs().mic_gain;
         a.mark_dirty();
     }
     emit_state(&app, &ctx);
 }
 
-/// Re-enumerates output devices (slow); the Settings panel calls this when opened.
+/// Re-enumerates devices (slow) and restarts mic passthrough; the Settings panel calls this when opened.
 #[tauri::command]
 pub fn refresh_devices(app: AppHandle, ctx: State<'_, Ctx>) {
     let addresses = lan_addresses();
-    {
+    let toast = {
         let mut a = lock(&ctx.shared);
         a.available_devices = a.engine.refresh_devices();
+        a.available_inputs = a.engine.input_devices();
         a.addresses = addresses;
         a.refresh_files();
+        a.passthrough_toast()
+    };
+    if let Some(t) = toast {
+        emit_toast(&app, "error", t);
     }
     emit_state(&app, &ctx);
 }

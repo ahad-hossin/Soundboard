@@ -38,10 +38,16 @@ pub fn run() {
             let outputs = soundboard_core::audio::Outputs {
                 speakers: cfg.devices.speakers.clone(),
                 virtual_mic: cfg.devices.virtual_mic.clone(),
+                microphone: cfg.devices.microphone.clone(),
+                mic_gain: cfg.devices.mic_gain,
             };
             let mut engine = Engine::new(RodioBackend::new(), outputs, cfg.master_volume, CACHE_BYTES);
-            let available_devices = engine.refresh_devices();
-            let mut app_state = App::new(cfg, engine, library, available_devices);
+            // `Engine::new` already read the default output; this starts mic passthrough once.
+            let _ = engine.apply_passthrough();
+            let available_devices = engine.devices();
+            let available_inputs = engine.input_devices();
+            let mut app_state = App::new(cfg, engine, library, available_devices, available_inputs);
+            notices.extend(app_state.passthrough_toast());
             app_state.startup_notices = notices;
             let shared: Shared = Arc::new(Mutex::new(app_state));
             app.manage(Ctx { shared: shared.clone(), hub: Hub::new(), remote: Mutex::new(None) });
@@ -77,6 +83,7 @@ pub fn run() {
             commands::clear_hotkey,
             commands::set_stop_all_hotkey,
             commands::set_devices,
+            commands::set_mic_gain,
             commands::refresh_devices,
             commands::test_tone,
             commands::set_remote_port,

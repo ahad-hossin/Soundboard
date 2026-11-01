@@ -24,6 +24,10 @@ pub struct App {
     pub warned_devices: HashSet<String>,
     /// Cached output device list; enumerating is slow, so it is refreshed only on demand.
     pub available_devices: Vec<DeviceInfo>,
+    /// Cached input device list, refreshed alongside `available_devices`.
+    pub available_inputs: Vec<DeviceInfo>,
+    /// Last mic passthrough failure shown as a toast, so the same failure is reported once.
+    pub last_passthrough_error: Option<String>,
     /// Shown once as toasts when the UI first loads.
     pub startup_notices: Vec<String>,
     /// Config has changes not yet written; the reaper flushes it every tick.
@@ -76,7 +80,10 @@ pub struct UiSound {
 pub struct UiDevices {
     pub speakers: Option<String>,
     pub virtual_mic: Option<String>,
+    pub microphone: Option<String>,
+    pub mic_gain: f32,
     pub available: Vec<DeviceInfo>,
+    pub available_inputs: Vec<DeviceInfo>,
 }
 
 #[derive(Serialize, Clone)]
@@ -101,10 +108,22 @@ pub struct UiState {
 
 impl App {
     pub fn outputs(&self) -> Outputs {
-        Outputs { speakers: self.config.devices.speakers.clone(), virtual_mic: self.config.devices.virtual_mic.clone() }
+        let d = &self.config.devices;
+        Outputs {
+            speakers: d.speakers.clone(),
+            virtual_mic: d.virtual_mic.clone(),
+            microphone: d.microphone.clone(),
+            mic_gain: d.mic_gain,
+        }
     }
 
-    pub fn new(config: Config, engine: Engine<RodioBackend>, library: Library, available_devices: Vec<DeviceInfo>) -> Self {
+    pub fn new(
+        config: Config,
+        engine: Engine<RodioBackend>,
+        library: Library,
+        available_devices: Vec<DeviceInfo>,
+        available_inputs: Vec<DeviceInfo>,
+    ) -> Self {
         let mut app = Self {
             config,
             engine,
@@ -113,6 +132,8 @@ impl App {
             remote_error: None,
             warned_devices: HashSet::new(),
             available_devices,
+            available_inputs,
+            last_passthrough_error: None,
             startup_notices: Vec::new(),
             dirty: false,
             save_failed_reported: false,
@@ -121,6 +142,29 @@ impl App {
         };
         app.refresh_files();
         app
+    }
+
+    /// Re-enumerates output and input devices into the caches.
+    pub fn refresh_device_lists(&mut self) {
+        self.available_devices = self.engine.devices();
+        self.available_inputs = self.engine.input_devices();
+    }
+
+    /// Toast text for the engine's last passthrough failure, or None when passthrough
+    /// worked or this exact failure was already reported. A success re-arms the toast.
+    pub fn passthrough_toast(&mut self) -> Option<String> {
+        match self.engine.passthrough_error() {
+            None => {
+                self.last_passthrough_error = None;
+                None
+            }
+            Some(e) if self.last_passthrough_error.as_deref() == Some(e.as_str()) => None,
+            Some(e) => {
+                let message = format!("Microphone passthrough failed: {e}");
+                self.last_passthrough_error = Some(e);
+                Some(message)
+            }
+        }
     }
 
     /// Records that config changed; the reaper writes it within one tick.
@@ -189,7 +233,10 @@ impl App {
             devices: UiDevices {
                 speakers: self.config.devices.speakers.clone(),
                 virtual_mic: self.config.devices.virtual_mic.clone(),
+                microphone: self.config.devices.microphone.clone(),
+                mic_gain: self.config.devices.mic_gain,
                 available: self.available_devices.clone(),
+                available_inputs: self.available_inputs.clone(),
             },
             stop_all_hotkey: self.config.stop_all_hotkey.clone(),
             remote: UiRemote {
