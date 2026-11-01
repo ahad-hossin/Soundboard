@@ -19,7 +19,7 @@ export function RemotePanel() {
 
   const urls = remote.addresses.map((ip) => `http://${ip}:${remote.port}`);
   const copy = (u: string) => {
-    void navigator.clipboard.writeText(u).then(() => toast("info", "Copied"));
+    void navigator.clipboard.writeText(u).then(() => toast("info", "Copied")).catch(() => toast("error", "Could not copy"));
   };
 
   return (

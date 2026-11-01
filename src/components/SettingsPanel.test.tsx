@@ -1,9 +1,19 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useStore } from "../lib/store";
 import { api } from "../lib/api";
 import { SettingsPanel } from "./SettingsPanel";
 
-vi.mock("../lib/api", () => ({ api: { refreshDevices: vi.fn().mockResolvedValue(undefined) } }));
+vi.mock("../lib/api", () => ({
+  api: {
+    refreshDevices: vi.fn(),
+    setDevices: vi.fn(),
+    testTone: vi.fn(),
+    setStopAllHotkey: vi.fn(),
+    setRemotePort: vi.fn(),
+    setPin: vi.fn(),
+  },
+}));
 
 const base = {
   master_volume: 0.8,
@@ -16,7 +26,11 @@ const base = {
 };
 
 describe("SettingsPanel", () => {
-  beforeEach(() => useStore.setState({ state: base }));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const fn of Object.values(api)) (fn as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    useStore.setState({ state: base, toasts: [] });
+  });
 
   it("lists devices and keeps a missing configured device selectable", () => {
     render(<SettingsPanel />);
@@ -43,5 +57,69 @@ describe("SettingsPanel", () => {
     useStore.setState({ state: { ...base, remote: { ...base.remote, pin_set: true } } });
     render(<SettingsPanel />);
     expect(screen.getByText("Remove")).toBeInTheDocument();
+  });
+
+  it("disables Test for an empty slot and enables it for a configured one", () => {
+    render(<SettingsPanel />);
+    const tests = screen.getAllByRole("button", { name: "Test" });
+    expect(tests[0]).toBeEnabled();
+    expect(tests[1]).toBeDisabled();
+  });
+
+  it("passes the other device slot through unchanged when one changes", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel />);
+    await user.selectOptions(screen.getByLabelText("Speakers"), "CABLE Input");
+    expect(api.setDevices).toHaveBeenLastCalledWith("CABLE Input", null);
+    await user.selectOptions(screen.getByLabelText("Virtual mic"), "CABLE Input");
+    expect(api.setDevices).toHaveBeenLastCalledWith("Ghost Speakers", "CABLE Input");
+  });
+
+  it("rejects an invalid port with a toast and applies a valid one on Enter", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel />);
+    const port = screen.getByLabelText("Remote port");
+    await user.clear(port);
+    await user.type(port, "80");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(useStore.getState().toasts[0].message).toMatch(/1024/);
+    expect(api.setRemotePort).not.toHaveBeenCalled();
+    await user.clear(port);
+    await user.type(port, "8000{Enter}");
+    expect(api.setRemotePort).toHaveBeenCalledWith(8000);
+  });
+
+  it("filters PIN input, validates length, and sets a valid PIN", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel />);
+    const pin = screen.getByLabelText("PIN") as HTMLInputElement;
+    await user.type(pin, "12a4");
+    expect(pin.value).toBe("124");
+    await user.clear(pin);
+    await user.type(pin, "123");
+    await user.click(screen.getByRole("button", { name: "Set" }));
+    expect(useStore.getState().toasts[0].message).toMatch(/4 to 8 digits/);
+    expect(api.setPin).not.toHaveBeenCalled();
+    await user.clear(pin);
+    await user.type(pin, "1234");
+    await user.click(screen.getByRole("button", { name: "Set" }));
+    expect(api.setPin).toHaveBeenCalledWith("1234");
+    expect(pin.value).toBe("");
+  });
+
+  it("removes the PIN", async () => {
+    const user = userEvent.setup();
+    useStore.setState({ state: { ...base, remote: { ...base.remote, pin_set: true } } });
+    render(<SettingsPanel />);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(api.setPin).toHaveBeenCalledWith(null);
+  });
+
+  it("opens the hotkey capture dialog from Change", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
   });
 });
