@@ -29,13 +29,27 @@ fn one() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Devices {
     #[serde(default)]
     pub speakers: Option<String>,
     #[serde(default)]
     pub virtual_mic: Option<String>,
+    /// Input device mixed into the virtual mic output, or None for no passthrough.
+    #[serde(default)]
+    pub microphone: Option<String>,
+    /// Linear passthrough gain, 0..=2.
+    #[serde(default = "one")]
+    pub mic_gain: f32,
 }
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self { speakers: None, virtual_mic: None, microphone: None, mic_gain: 1.0 }
+    }
+}
+
+pub const MAX_MIC_GAIN: f32 = 2.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteConfig {
@@ -125,6 +139,8 @@ impl Config {
         for s in &mut self.sounds {
             s.volume = unit(s.volume, 1.0);
         }
+        self.devices.mic_gain =
+            if self.devices.mic_gain.is_finite() { self.devices.mic_gain.clamp(0.0, MAX_MIC_GAIN) } else { 1.0 };
         self
     }
 }
@@ -206,6 +222,8 @@ mod tests {
         assert_eq!(c.stop_all_hotkey, DEFAULT_STOP_ALL_HOTKEY);
         assert!(c.sounds.is_empty());
         assert_eq!(c.remote.token_secret.len(), 44, "32 random bytes base64");
+        assert_eq!(c.devices.microphone, None);
+        assert_eq!(c.devices.mic_gain, 1.0);
     }
 
     #[test]
@@ -230,6 +248,12 @@ mod tests {
             volume: 0.5,
             hotkey: Some("Ctrl+Shift+Digit1".into()),
         });
+        cfg.devices = Devices {
+            speakers: Some("Speakers".into()),
+            virtual_mic: Some("CABLE Input".into()),
+            microphone: Some("Headset Mic".into()),
+            mic_gain: 1.5,
+        };
         save(&path, &cfg).unwrap();
         match load(&path) {
             LoadOutcome::Loaded(loaded) => assert_eq!(loaded, cfg),
@@ -308,6 +332,27 @@ mod tests {
         assert_eq!(c.master_volume, 1.0);
         assert_eq!(c.sounds[0].volume, 0.0);
         assert_eq!(c.sounds[1].volume, 1.0);
+    }
+
+    #[test]
+    fn devices_without_mic_keys_load_with_defaults() {
+        let json = r#"{"devices":{"speakers":"Speakers","virtual_mic":"CABLE Input"}}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.devices.speakers.as_deref(), Some("Speakers"));
+        assert_eq!(cfg.devices.microphone, None);
+        assert_eq!(cfg.devices.mic_gain, 1.0);
+    }
+
+    #[test]
+    fn mic_gain_is_clamped_at_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"devices":{"microphone":"Mic","mic_gain":3.0}}"#).unwrap();
+        let c = load(&path).into_config();
+        assert_eq!(c.devices.microphone.as_deref(), Some("Mic"));
+        assert_eq!(c.devices.mic_gain, 2.0);
+        fs::write(&path, r#"{"devices":{"mic_gain":-0.5}}"#).unwrap();
+        assert_eq!(load(&path).into_config().devices.mic_gain, 0.0);
     }
 
     #[test]

@@ -4,13 +4,32 @@ use std::path::Path;
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
 use super::cache::BufferCache;
 use super::decode::decode_file;
+use crate::config::MAX_MIC_GAIN;
 
 pub const TEST_TONE_ID: &str = "__test_tone__";
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Outputs {
     pub speakers: Option<String>,
     pub virtual_mic: Option<String>,
+    /// Input device mixed into the virtual mic output; never played on the speakers.
+    pub microphone: Option<String>,
+    /// Linear passthrough gain, 0..=2.
+    pub mic_gain: f32,
+}
+
+impl Default for Outputs {
+    fn default() -> Self {
+        Self { speakers: None, virtual_mic: None, microphone: None, mic_gain: 1.0 }
+    }
+}
+
+fn clamp_mic_gain(g: f32) -> f32 {
+    if g.is_finite() {
+        g.clamp(0.0, MAX_MIC_GAIN)
+    } else {
+        1.0
+    }
 }
 
 impl Outputs {
@@ -52,6 +71,8 @@ pub struct Engine<B: AudioBackend> {
     /// Name of the system default output at the last enumeration, so a Default
     /// fallback never opens a second sink on a device that is already playing.
     default_device: Option<String>,
+    /// Last mic passthrough start failure; cleared by the next successful apply.
+    passthrough_error: Option<String>,
 }
 
 fn default_name(devices: &[DeviceInfo]) -> Option<String> {
@@ -59,8 +80,10 @@ fn default_name(devices: &[DeviceInfo]) -> Option<String> {
 }
 
 impl<B: AudioBackend> Engine<B> {
-    pub fn new(backend: B, outputs: Outputs, master: f32, cache_bytes: usize) -> Self {
+    /// Does not start mic passthrough; call `apply_passthrough` once the engine is set up.
+    pub fn new(backend: B, mut outputs: Outputs, master: f32, cache_bytes: usize) -> Self {
         let default_device = default_name(&backend.devices());
+        outputs.mic_gain = clamp_mic_gain(outputs.mic_gain);
         Self {
             backend,
             cache: BufferCache::new(cache_bytes),
@@ -69,6 +92,7 @@ impl<B: AudioBackend> Engine<B> {
             active: Vec::new(),
             next_instance: 1,
             default_device,
+            passthrough_error: None,
         }
     }
 
@@ -80,23 +104,65 @@ impl<B: AudioBackend> Engine<B> {
         self.backend.devices()
     }
 
-    /// Re-enumerates devices, remembers which one is the default, and returns the list.
+    pub fn input_devices(&self) -> Vec<DeviceInfo> {
+        self.backend.input_devices()
+    }
+
+    /// Re-enumerates devices, remembers which one is the default, restarts mic passthrough
+    /// (see `passthrough_error`), and returns the output list.
     pub fn refresh_devices(&mut self) -> Vec<DeviceInfo> {
         let devices = self.backend.devices();
         self.default_device = default_name(&devices);
+        let _ = self.apply_passthrough();
         devices
+    }
+
+    /// Starts (or restarts) mic passthrough when both a microphone and a virtual mic are
+    /// configured, otherwise stops it. Returns whether passthrough is now running.
+    /// The outcome is also kept for `passthrough_error`.
+    pub fn apply_passthrough(&mut self) -> Result<bool, AudioError> {
+        let result = match (&self.outputs.microphone, &self.outputs.virtual_mic) {
+            (Some(mic), Some(virtual_mic)) => self
+                .backend
+                .start_passthrough(
+                    &DeviceTarget::from_name(Some(mic)),
+                    &DeviceTarget::Named(virtual_mic.clone()),
+                    self.outputs.mic_gain,
+                )
+                .map(|()| true),
+            _ => {
+                self.backend.stop_passthrough();
+                Ok(false)
+            }
+        };
+        self.passthrough_error = result.as_ref().err().map(|e| e.to_string());
+        result
+    }
+
+    /// The last passthrough start failure, if the most recent apply failed.
+    pub fn passthrough_error(&self) -> Option<String> {
+        self.passthrough_error.clone()
+    }
+
+    pub fn set_mic_gain(&mut self, g: f32) {
+        let g = clamp_mic_gain(g);
+        self.outputs.mic_gain = g;
+        self.backend.set_passthrough_gain(g);
     }
 
     pub fn outputs(&self) -> &Outputs {
         &self.outputs
     }
 
-    /// Stops everything, drops device streams, and switches outputs.
-    pub fn set_outputs(&mut self, outputs: Outputs) {
+    /// Stops everything, drops device streams, switches outputs, and restarts mic
+    /// passthrough (see `passthrough_error`).
+    pub fn set_outputs(&mut self, mut outputs: Outputs) {
         self.stop_all();
         self.backend.reset();
+        outputs.mic_gain = clamp_mic_gain(outputs.mic_gain);
         self.outputs = outputs;
         self.default_device = default_name(&self.backend.devices());
+        let _ = self.apply_passthrough();
     }
 
     pub fn master(&self) -> f32 {
@@ -266,7 +332,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn both() -> Outputs {
-        Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("CABLE Input".into()) }
+        Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("CABLE Input".into()), ..Outputs::default() }
     }
 
     fn engine(outputs: Outputs, master: f32) -> Engine<FakeBackend> {
@@ -297,7 +363,7 @@ mod tests {
 
     #[test]
     fn missing_named_device_falls_back_to_default_and_reports() {
-        let mut e = engine(Outputs { speakers: Some("Ghost".into()), virtual_mic: None }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Ghost".into()), virtual_mic: None, ..Outputs::default() }, 1.0);
         let out = e.play_buffer("a", 1.0, &clip()).unwrap();
         assert_eq!(out.sinks, 1);
         assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
@@ -317,7 +383,7 @@ mod tests {
 
     #[test]
     fn fallback_skipped_when_other_slot_is_the_default_device() {
-        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("Ghost".into()) }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("Ghost".into()), ..Outputs::default() }, 1.0);
         let out = e.play_buffer("a", 1.0, &clip()).unwrap();
         assert_eq!(play_targets(&e), vec![DeviceTarget::Named("Speakers".into())]);
         assert_eq!(out.sinks, 1);
@@ -326,7 +392,7 @@ mod tests {
 
     #[test]
     fn both_slots_missing_play_once_on_default() {
-        let mut e = engine(Outputs { speakers: Some("Ghost1".into()), virtual_mic: Some("Ghost2".into()) }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Ghost1".into()), virtual_mic: Some("Ghost2".into()), ..Outputs::default() }, 1.0);
         let out = e.play_buffer("a", 1.0, &clip()).unwrap();
         assert_eq!(play_targets(&e), vec![DeviceTarget::Default]);
         assert_eq!(out.sinks, 1);
@@ -335,7 +401,7 @@ mod tests {
 
     #[test]
     fn named_default_after_fallback_is_skipped() {
-        let mut e = engine(Outputs { speakers: Some("Ghost".into()), virtual_mic: Some("Speakers".into()) }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Ghost".into()), virtual_mic: Some("Speakers".into()), ..Outputs::default() }, 1.0);
         let out = e.play_buffer("a", 1.0, &clip()).unwrap();
         assert_eq!(play_targets(&e), vec![DeviceTarget::Default]);
         assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
@@ -357,7 +423,7 @@ mod tests {
 
     #[test]
     fn same_device_in_both_slots_plays_once() {
-        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("Speakers".into()) }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: Some("Speakers".into()), ..Outputs::default() }, 1.0);
         let out = e.play_buffer("a", 1.0, &clip()).unwrap();
         assert_eq!(out.sinks, 1);
     }
@@ -385,7 +451,7 @@ mod tests {
 
     #[test]
     fn set_sound_volume_only_touches_matching_sound() {
-        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: None }, 1.0);
+        let mut e = engine(Outputs { speakers: Some("Speakers".into()), virtual_mic: None, ..Outputs::default() }, 1.0);
         e.play_buffer("a", 1.0, &clip()).unwrap();
         e.play_buffer("b", 1.0, &clip()).unwrap();
         e.set_sound_volume("a", 0.2);
@@ -460,7 +526,7 @@ mod tests {
     fn set_outputs_resets_backend_and_stops_sound() {
         let mut e = engine(both(), 1.0);
         e.play_buffer("a", 1.0, &clip()).unwrap();
-        e.set_outputs(Outputs { speakers: Some("Speakers".into()), virtual_mic: None });
+        e.set_outputs(Outputs { speakers: Some("Speakers".into()), virtual_mic: None, ..Outputs::default() });
         assert!(e.playing().is_empty());
         assert!(e.backend().calls().contains(&Call::Reset));
         assert_eq!(e.outputs().targets().len(), 1);
@@ -472,6 +538,123 @@ mod tests {
         e.test_tone(&DeviceTarget::Named("Speakers".into())).unwrap();
         assert!(e.playing().is_empty());
         assert_eq!(e.backend().handles().len(), 1);
+    }
+
+    fn mic_engine(outputs: Outputs) -> Engine<FakeBackend> {
+        Engine::new(FakeBackend::with_inputs(&["Speakers", "CABLE Input"], &["Headset Mic"]), outputs, 1.0, 1024 * 1024)
+    }
+
+    fn with_mic(mic: Option<&str>, virtual_mic: Option<&str>) -> Outputs {
+        Outputs {
+            speakers: Some("Speakers".into()),
+            virtual_mic: virtual_mic.map(String::from),
+            microphone: mic.map(String::from),
+            mic_gain: 1.25,
+        }
+    }
+
+    fn passthrough_calls(e: &Engine<FakeBackend>) -> Vec<Call> {
+        e.backend()
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::StartPassthrough { .. } | Call::StopPassthrough | Call::SetPassthroughGain(_)))
+            .collect()
+    }
+
+    #[test]
+    fn outputs_default_mic_gain_is_one() {
+        assert_eq!(Outputs::default().mic_gain, 1.0);
+        assert_eq!(Outputs::default().microphone, None);
+    }
+
+    #[test]
+    fn new_does_not_start_passthrough() {
+        let e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert!(passthrough_calls(&e).is_empty());
+        assert_eq!(e.input_devices().len(), 1);
+        assert!(e.input_devices()[0].is_default);
+    }
+
+    #[test]
+    fn set_outputs_with_mic_and_virtual_mic_starts_passthrough() {
+        let mut e = mic_engine(Outputs::default());
+        e.set_outputs(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert_eq!(
+            passthrough_calls(&e),
+            vec![Call::StartPassthrough {
+                input: DeviceTarget::Named("Headset Mic".into()),
+                output: DeviceTarget::Named("CABLE Input".into()),
+                gain: 1.25,
+            }]
+        );
+        assert_eq!(e.passthrough_error(), None);
+    }
+
+    #[test]
+    fn set_outputs_without_mic_stops_passthrough() {
+        let mut e = mic_engine(Outputs::default());
+        e.set_outputs(with_mic(None, Some("CABLE Input")));
+        assert_eq!(passthrough_calls(&e), vec![Call::StopPassthrough]);
+    }
+
+    #[test]
+    fn set_outputs_without_virtual_mic_stops_and_never_starts() {
+        let mut e = mic_engine(Outputs::default());
+        e.set_outputs(with_mic(Some("Headset Mic"), None));
+        assert_eq!(passthrough_calls(&e), vec![Call::StopPassthrough]);
+    }
+
+    #[test]
+    fn apply_passthrough_reports_whether_it_runs() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert!(e.apply_passthrough().unwrap());
+        let mut e = mic_engine(with_mic(None, Some("CABLE Input")));
+        assert!(!e.apply_passthrough().unwrap());
+    }
+
+    #[test]
+    fn unknown_mic_sets_passthrough_error_until_a_successful_apply() {
+        let mut e = mic_engine(Outputs::default());
+        e.set_outputs(with_mic(Some("Ghost Mic"), Some("CABLE Input")));
+        let err = e.passthrough_error().expect("error recorded");
+        assert!(err.contains("microphone not found"), "{err}");
+        e.set_outputs(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert_eq!(e.passthrough_error(), None);
+    }
+
+    #[test]
+    fn refresh_devices_restarts_passthrough() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        e.refresh_devices();
+        e.refresh_devices();
+        let starts = passthrough_calls(&e).into_iter().filter(|c| matches!(c, Call::StartPassthrough { .. })).count();
+        assert_eq!(starts, 2);
+    }
+
+    #[test]
+    fn set_mic_gain_forwards_and_clamps() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        e.set_mic_gain(1.5);
+        assert_eq!(e.outputs().mic_gain, 1.5);
+        e.set_mic_gain(3.0);
+        assert_eq!(e.outputs().mic_gain, 2.0);
+        e.set_mic_gain(-1.0);
+        assert_eq!(e.outputs().mic_gain, 0.0);
+        assert_eq!(
+            passthrough_calls(&e),
+            vec![Call::SetPassthroughGain(1.5), Call::SetPassthroughGain(2.0), Call::SetPassthroughGain(0.0)]
+        );
+    }
+
+    #[test]
+    fn mic_is_never_a_playback_target() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert_eq!(
+            e.outputs().targets(),
+            vec![DeviceTarget::Named("Speakers".into()), DeviceTarget::Named("CABLE Input".into())]
+        );
+        e.play_buffer("a", 1.0, &clip()).unwrap();
+        assert!(!play_targets(&e).contains(&DeviceTarget::Named("Headset Mic".into())));
     }
 
     #[test]

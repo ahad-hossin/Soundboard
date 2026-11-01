@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
+use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rodio::cpal::{FromSample, SampleFormat, SizedSample};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
@@ -69,8 +72,127 @@ impl Source for SharedSource {
     }
 }
 
+/// Live microphone samples for the virtual mic sink, read from the ring the input callback fills.
+///
+/// Never ends. An underrun yields silence; when more than `high_water` samples (100 ms) are
+/// queued the backlog is cut to about `high_water / 2`, so latency cannot creep upward.
+/// Silence and skips happen on whole frames so interleaved channels never swap.
+struct MicSource {
+    cons: HeapCons<f32>,
+    channels: u16,
+    sample_rate: u32,
+    high_water: usize,
+    /// Index of the next sample within the current frame.
+    pos: u16,
+    /// The current frame is being filled with silence (underrun at its start).
+    silent: bool,
+}
+
+impl MicSource {
+    fn new(cons: HeapCons<f32>, channels: u16, sample_rate: u32) -> Self {
+        let channels = channels.max(1);
+        let high_water = frames_for_ms(sample_rate, 100) * usize::from(channels);
+        Self { cons, channels, sample_rate, high_water, pos: 0, silent: false }
+    }
+}
+
+/// Whole frames in `ms` milliseconds at `sample_rate`, at least one.
+fn frames_for_ms(sample_rate: u32, ms: u32) -> usize {
+    (sample_rate as usize * ms as usize / 1000).max(1)
+}
+
+impl Iterator for MicSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let channels = usize::from(self.channels);
+        if self.pos == 0 {
+            let occupied = self.cons.occupied_len();
+            if occupied > self.high_water {
+                let excess = occupied - self.high_water / 2;
+                self.cons.skip(excess - excess % channels);
+            }
+            self.silent = self.cons.occupied_len() < channels;
+        }
+        let sample = if self.silent { 0.0 } else { self.cons.try_pop().unwrap_or(0.0) };
+        self.pos = (self.pos + 1) % self.channels;
+        Some(sample)
+    }
+}
+
+impl Source for MicSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
+/// Pushes whole frames of `data` into the ring as f32; frames that do not fit are dropped.
+fn push_frames<T>(prod: &mut HeapProd<f32>, data: &[T], channels: usize)
+where
+    T: Copy,
+    f32: FromSample<T>,
+{
+    for frame in data.chunks_exact(channels) {
+        if prod.vacant_len() < channels {
+            break;
+        }
+        for &s in frame {
+            let _ = prod.try_push(f32::from_sample_(s));
+        }
+    }
+}
+
+fn build_mic_stream<T>(
+    device: &rodio::cpal::Device,
+    config: &rodio::cpal::StreamConfig,
+    mut prod: HeapProd<f32>,
+) -> Result<rodio::cpal::Stream, AudioError>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let channels = usize::from(config.channels.max(1));
+    device
+        .build_input_stream::<T, _, _>(
+            config,
+            move |data: &[T], _| push_frames(&mut prod, data, channels),
+            |e| log::warn!("microphone stream error: {e}"),
+            None,
+        )
+        .map_err(|e| AudioError::Stream(e.to_string()))
+}
+
+/// A running mic passthrough. Field order matters: the sink stops before the capture stream drops.
+struct Passthrough {
+    sink: Sink,
+    _input: rodio::cpal::Stream,
+    output: DeviceTarget,
+}
+
+impl Drop for Passthrough {
+    fn drop(&mut self) {
+        self.sink.stop();
+    }
+}
+
 enum Cmd {
     Devices(Sender<Vec<DeviceInfo>>),
+    InputDevices(Sender<Vec<DeviceInfo>>),
+    StartPassthrough { input: DeviceTarget, output: DeviceTarget, gain: f32, reply: Sender<Result<(), AudioError>> },
+    StopPassthrough,
+    SetPassthroughGain(f32),
     Play { target: DeviceTarget, buffer: DecodedBuffer, gain: f32, reply: Sender<Result<SinkHandle, AudioError>> },
     Stop(SinkHandle),
     SetGain(SinkHandle, f32),
@@ -140,6 +262,30 @@ impl AudioBackend for RodioBackend {
     fn reset(&self) {
         let _ = self.tx.send(Cmd::Reset);
     }
+
+    fn input_devices(&self) -> Vec<DeviceInfo> {
+        let (tx, rx) = mpsc::channel();
+        if self.tx.send(Cmd::InputDevices(tx)).is_err() {
+            return Vec::new();
+        }
+        rx.recv().unwrap_or_default()
+    }
+
+    fn start_passthrough(&self, input: &DeviceTarget, output: &DeviceTarget, gain: f32) -> Result<(), AudioError> {
+        let (tx, rx) = mpsc::channel();
+        self.tx
+            .send(Cmd::StartPassthrough { input: input.clone(), output: output.clone(), gain, reply: tx })
+            .map_err(|_| Self::gone())?;
+        rx.recv().map_err(|_| Self::gone())?
+    }
+
+    fn stop_passthrough(&self) {
+        let _ = self.tx.send(Cmd::StopPassthrough);
+    }
+
+    fn set_passthrough_gain(&self, gain: f32) {
+        let _ = self.tx.send(Cmd::SetPassthroughGain(gain));
+    }
 }
 
 struct AudioThread {
@@ -148,6 +294,7 @@ struct AudioThread {
     sinks: HashMap<SinkHandle, Sink>,
     sink_targets: HashMap<SinkHandle, DeviceTarget>,
     last_validated: HashMap<DeviceTarget, Instant>,
+    passthrough: Option<Passthrough>,
     next: u64,
 }
 
@@ -158,12 +305,27 @@ fn audio_thread(rx: Receiver<Cmd>) {
         sinks: HashMap::new(),
         sink_targets: HashMap::new(),
         last_validated: HashMap::new(),
+        passthrough: None,
         next: 1,
     };
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Cmd::Devices(reply) => {
                 let _ = reply.send(st.devices());
+            }
+            Cmd::InputDevices(reply) => {
+                let _ = reply.send(st.input_devices());
+            }
+            Cmd::StartPassthrough { input, output, gain, reply } => {
+                let _ = reply.send(st.start_passthrough(&input, &output, gain));
+            }
+            Cmd::StopPassthrough => {
+                st.passthrough = None;
+            }
+            Cmd::SetPassthroughGain(g) => {
+                if let Some(p) = &st.passthrough {
+                    p.sink.set_volume(g);
+                }
             }
             Cmd::Play { target, buffer, gain, reply } => {
                 let _ = reply.send(st.play(&target, &buffer, gain));
@@ -186,6 +348,7 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 let _ = reply.send(done);
             }
             Cmd::Reset => {
+                st.passthrough = None;
                 st.sinks.clear();
                 st.sink_targets.clear();
                 st.streams.clear();
@@ -210,6 +373,69 @@ impl AudioThread {
         }
     }
 
+    fn input_devices(&self) -> Vec<DeviceInfo> {
+        let default = self.host.default_input_device().and_then(|d| d.name().ok());
+        match self.host.input_devices() {
+            Ok(iter) => iter
+                .filter_map(|d| d.name().ok())
+                .map(|name| DeviceInfo { is_default: Some(&name) == default.as_ref(), name })
+                .collect(),
+            Err(e) => {
+                log::warn!("enumerating input devices failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn find_input_device(&self, target: &DeviceTarget) -> Result<rodio::cpal::Device, AudioError> {
+        match target {
+            DeviceTarget::Default => self
+                .host
+                .default_input_device()
+                .ok_or_else(|| AudioError::InputDeviceNotFound("default microphone".into())),
+            DeviceTarget::Named(name) => self
+                .host
+                .input_devices()
+                .map_err(|e| AudioError::Stream(e.to_string()))?
+                .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
+                .ok_or_else(|| AudioError::InputDeviceNotFound(name.clone())),
+        }
+    }
+
+    /// Captures `input` into a 200 ms ring and plays it through a sink on the shared `output` stream.
+    fn start_passthrough(&mut self, input: &DeviceTarget, output: &DeviceTarget, gain: f32) -> Result<(), AudioError> {
+        self.passthrough = None;
+        let device = self.find_input_device(input)?;
+        let supported = device.default_input_config().map_err(|e| AudioError::Stream(e.to_string()))?;
+        let config = supported.config();
+        let channels = config.channels.max(1);
+        let sample_rate = config.sample_rate.0;
+        let capacity = frames_for_ms(sample_rate, 200) * usize::from(channels);
+        let (prod, cons) = HeapRb::<f32>::new(capacity).split();
+        let stream = match supported.sample_format() {
+            SampleFormat::F32 => build_mic_stream::<f32>(&device, &config, prod)?,
+            SampleFormat::I16 => build_mic_stream::<i16>(&device, &config, prod)?,
+            SampleFormat::U16 => build_mic_stream::<u16>(&device, &config, prod)?,
+            _ => return Err(AudioError::Stream("unsupported mic sample format".into())),
+        };
+        stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
+        let sink = match self.handle_for(output).and_then(|h| Sink::try_new(&h).map_err(|e| AudioError::Stream(e.to_string()))) {
+            Ok(s) => s,
+            Err(e) => {
+                // Same recovery as `play`: reopen next time, and say so plainly if the device is gone.
+                self.drop_stream(output);
+                return match self.find_device(output) {
+                    Err(not_found @ AudioError::DeviceNotFound(_)) => Err(not_found),
+                    _ => Err(e),
+                };
+            }
+        };
+        sink.set_volume(gain);
+        sink.append(MicSource::new(cons, channels, sample_rate));
+        self.passthrough = Some(Passthrough { sink, _input: stream, output: output.clone() });
+        Ok(())
+    }
+
     fn find_device(&self, target: &DeviceTarget) -> Result<rodio::cpal::Device, AudioError> {
         match target {
             DeviceTarget::Default => self
@@ -231,7 +457,11 @@ impl AudioThread {
     }
 
     /// Drop the stream for `target` and every sink created on it, so those voices report finished.
+    /// A passthrough playing on it is dropped too; the engine restarts it on the next device change.
     fn drop_stream(&mut self, target: &DeviceTarget) {
+        if self.passthrough.as_ref().is_some_and(|p| &p.output == target) {
+            self.passthrough = None;
+        }
         self.streams.remove(target);
         self.last_validated.remove(target);
         let dead: Vec<SinkHandle> =
@@ -337,6 +567,109 @@ mod tests {
         assert!(!needs_revalidation(Some(now), now + Duration::from_millis(1500)));
         assert!(!needs_revalidation(Some(now), now + REVALIDATE_AFTER));
         assert!(needs_revalidation(Some(now), now + REVALIDATE_AFTER + Duration::from_millis(1)));
+    }
+
+    fn ring(capacity: usize) -> (HeapProd<f32>, HeapCons<f32>) {
+        HeapRb::<f32>::new(capacity).split()
+    }
+
+    #[test]
+    fn mic_source_yields_pushed_samples_then_silence() {
+        let (mut prod, cons) = ring(1000);
+        for i in 0..5 {
+            prod.try_push(i as f32 * 0.1).unwrap();
+        }
+        let mut src = MicSource::new(cons, 1, 1000);
+        assert_eq!(src.channels(), 1);
+        assert_eq!(src.sample_rate(), 1000);
+        assert_eq!(src.current_frame_len(), None);
+        assert_eq!(src.total_duration(), None);
+        let out: Vec<f32> = src.by_ref().take(5).collect();
+        assert_eq!(out, vec![0.0, 0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(src.next(), Some(0.0), "underrun is silence, not the end");
+        assert_eq!(src.next(), Some(0.0));
+        prod.try_push(0.9).unwrap();
+        assert_eq!(src.next(), Some(0.9), "resumes when samples arrive");
+    }
+
+    #[test]
+    fn mic_source_drops_backlog_past_high_water() {
+        // 1000 Hz mono: high water is 100 samples.
+        let (mut prod, cons) = ring(1000);
+        let mut src = MicSource::new(cons, 1, 1000);
+        assert_eq!(src.high_water, 100);
+        for i in 0..300 {
+            prod.try_push(i as f32).unwrap();
+        }
+        let first = src.next().unwrap();
+        // 300 queued, cut to 50: the next sample comes from the tail.
+        assert_eq!(first, 250.0);
+        assert_eq!(src.cons.occupied_len(), 49);
+        assert_eq!(src.next(), Some(251.0));
+    }
+
+    #[test]
+    fn mic_source_keeps_stereo_frames_aligned() {
+        let (mut prod, cons) = ring(1000);
+        let mut src = MicSource::new(cons, 2, 1000);
+        assert_eq!(src.high_water, 200);
+        // A lone left sample (half a frame) is not played until its right sample arrives.
+        prod.try_push(1.0).unwrap();
+        assert_eq!(src.next(), Some(0.0));
+        assert_eq!(src.next(), Some(0.0));
+        prod.try_push(-1.0).unwrap();
+        assert_eq!(src.next(), Some(1.0));
+        assert_eq!(src.next(), Some(-1.0));
+        // Backlog skips cut whole frames: left samples stay positive, right negative.
+        for i in 0..301 {
+            prod.try_push(i as f32 + 1.0).unwrap();
+            prod.try_push(-(i as f32) - 1.0).unwrap();
+        }
+        let l = src.next().unwrap();
+        let r = src.next().unwrap();
+        assert!(l > 0.0 && r < 0.0 && l == -r, "l={l} r={r}");
+        assert!(src.cons.occupied_len() <= 100);
+    }
+
+    #[test]
+    fn push_frames_drops_frames_that_do_not_fit() {
+        let (mut prod, mut cons) = ring(5);
+        push_frames(&mut prod, &[1i16, 2, 3, 4, 5, 6], 2);
+        assert_eq!(cons.occupied_len(), 4, "the third frame does not fit whole");
+        let first = cons.try_pop().unwrap();
+        assert!((first - 1.0 / 32768.0).abs() < 1e-6, "i16 converted to f32: {first}");
+    }
+
+    #[test]
+    fn input_devices_does_not_panic() {
+        let b = RodioBackend::new();
+        let _ = b.input_devices();
+        b.stop_passthrough();
+        b.set_passthrough_gain(0.5);
+    }
+
+    #[test]
+    fn unknown_named_microphone_is_not_found() {
+        let b = RodioBackend::new();
+        match b.start_passthrough(&DeviceTarget::Named("definitely-not-a-mic".into()), &DeviceTarget::Default, 1.0) {
+            Err(AudioError::InputDeviceNotFound(_)) => {}
+            Err(AudioError::Stream(_)) => {} // machines with no audio host at all
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// Needs a real microphone and output device; you may hear yourself for 300 ms.
+    /// Run with: cargo test -p soundboard-core passthrough_default -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn passthrough_default_mic_to_default_output() {
+        let b = RodioBackend::new();
+        b.start_passthrough(&DeviceTarget::Default, &DeviceTarget::Default, 0.5).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        b.set_passthrough_gain(0.25);
+        b.stop_passthrough();
+        // The audio thread is still responsive after stopping.
+        let _ = b.devices();
     }
 
     #[test]

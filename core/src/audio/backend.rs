@@ -54,6 +54,8 @@ impl DecodedBuffer {
 pub enum AudioError {
     #[error("output device not found: {0}")]
     DeviceNotFound(String),
+    #[error("microphone not found: {0}")]
+    InputDeviceNotFound(String),
     #[error("audio stream error: {0}")]
     Stream(String),
     #[error("could not decode {0}")]
@@ -74,4 +76,9 @@ pub trait AudioBackend: Send + Sync {
     fn is_finished(&self, handle: SinkHandle) -> bool;
     /// Drop every open device stream; next play reopens lazily.
     fn reset(&self);
+    fn input_devices(&self) -> Vec<DeviceInfo>;
+    /// Start (or restart) mic passthrough: capture `input`, play it on `output` at `gain`. Replaces any running passthrough.
+    fn start_passthrough(&self, input: &DeviceTarget, output: &DeviceTarget, gain: f32) -> Result<(), AudioError>;
+    fn stop_passthrough(&self);
+    fn set_passthrough_gain(&self, gain: f32);
 }
