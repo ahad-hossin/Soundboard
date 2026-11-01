@@ -1,0 +1,109 @@
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use soundboard_core::remote::auth::Lockout;
+use soundboard_core::remote::protocol::ServerMsg;
+use soundboard_core::remote::{self, RemoteHandler};
+use tauri::{AppHandle, Manager};
+
+use crate::state::{emit_state, emit_toast, lock, Ctx};
+
+struct Handler {
+    app: AppHandle,
+}
+
+impl RemoteHandler for Handler {
+    fn snapshot(&self) -> ServerMsg {
+        lock(&self.app.state::<Ctx>().shared).remote_snapshot()
+    }
+
+    fn play(&self, id: &str) {
+        let ctx = self.app.state::<Ctx>();
+        let result = lock(&ctx.shared).play(id);
+        match result {
+            Ok(toasts) => {
+                for t in toasts {
+                    emit_toast(&self.app, &t.level, t.message);
+                }
+            }
+            Err(e) => emit_toast(&self.app, "error", e),
+        }
+        emit_state(&self.app, &ctx);
+    }
+
+    fn stop_all(&self) {
+        let ctx = self.app.state::<Ctx>();
+        lock(&ctx.shared).engine.stop_all();
+        emit_state(&self.app, &ctx);
+    }
+
+    fn set_master_volume(&self, value: f32) {
+        let ctx = self.app.state::<Ctx>();
+        {
+            let mut a = lock(&ctx.shared);
+            a.engine.set_master(value);
+            a.config.master_volume = value.clamp(0.0, 1.0);
+            a.save();
+        }
+        emit_state(&self.app, &ctx);
+    }
+
+    fn image_path(&self, id: &str) -> Option<PathBuf> {
+        let ctx = self.app.state::<Ctx>();
+        let a = lock(&ctx.shared);
+        a.config.sound(id).and_then(|s| a.library.image_path(s))
+    }
+
+    fn pin_hash(&self) -> Option<String> {
+        lock(&self.app.state::<Ctx>().shared).config.remote.pin_hash.clone()
+    }
+
+    fn token_secret(&self) -> String {
+        lock(&self.app.state::<Ctx>().shared).config.remote.token_secret.clone()
+    }
+}
+
+/// (Re)starts the LAN server on the configured port. Safe to call any time.
+pub fn start(app: &AppHandle) {
+    let ctx = app.state::<Ctx>();
+    if let Some(h) = ctx.remote.lock().unwrap().take() {
+        h.abort();
+        // The old server has no graceful shutdown; close its phones so they reconnect to the new port.
+        ctx.hub.kick_all();
+    }
+    let port = lock(&ctx.shared).config.remote.port;
+    let handler: Arc<dyn RemoteHandler> = Arc::new(Handler { app: app.clone() });
+    let router = remote::router(handler, ctx.hub.clone(), Arc::new(Mutex::new(Lockout::standard())));
+
+    let app2 = app.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let ctx = app2.state::<Ctx>();
+        match remote::bind(port).await {
+            Ok((listener, actual)) => {
+                {
+                    let mut a = lock(&ctx.shared);
+                    a.remote_port = Some(actual);
+                    a.remote_error = None;
+                }
+                emit_state(&app2, &ctx);
+                if let Err(e) = remote::serve(listener, router).await {
+                    let mut a = lock(&ctx.shared);
+                    a.remote_port = None;
+                    a.remote_error = Some(format!("Remote server stopped: {e}"));
+                    drop(a);
+                    emit_state(&app2, &ctx);
+                }
+            }
+            Err(e) => {
+                {
+                    let mut a = lock(&ctx.shared);
+                    a.remote_port = None;
+                    a.remote_error = Some(format!("Could not open port {port} or the next ten: {e}"));
+                }
+                emit_toast(&app2, "error", "The phone remote could not start. Check the Remote panel.");
+                emit_state(&app2, &ctx);
+            }
+        }
+    });
+    *ctx.remote.lock().unwrap() = Some(handle);
+}

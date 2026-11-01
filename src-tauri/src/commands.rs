@@ -1,0 +1,266 @@
+use std::path::Path;
+
+use soundboard_core::audio::DeviceTarget;
+use soundboard_core::config::{self, Devices};
+use soundboard_core::hotkeys::{self, Owner};
+use soundboard_core::remote::auth;
+use tauri::{AppHandle, State};
+
+use crate::state::{emit_state, emit_toast, lock, App, Ctx, UiState};
+use crate::{hotkeys_glue, remote_glue};
+
+/// Lock, mutate, unlock. The caller emits state afterwards.
+fn mutate<T>(ctx: &Ctx, f: impl FnOnce(&mut App) -> Result<T, String>) -> Result<T, String> {
+    let mut app = lock(&ctx.shared);
+    f(&mut app)
+}
+
+fn rebind_hotkeys(app: &AppHandle) {
+    for e in hotkeys_glue::register_all(app) {
+        emit_toast(app, "warn", e);
+    }
+}
+
+#[tauri::command]
+pub fn get_state(ctx: State<'_, Ctx>) -> UiState {
+    let state = lock(&ctx.shared).ui_state(&ctx.hub);
+    lock(&ctx.shared).startup_notices.clear();
+    state
+}
+
+#[tauri::command]
+pub fn play(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let toasts = mutate(&ctx, |a| a.play(&id))?;
+    for t in toasts {
+        emit_toast(&app, &t.level, t.message);
+    }
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_all(app: AppHandle, ctx: State<'_, Ctx>) {
+    lock(&ctx.shared).engine.stop_all();
+    emit_state(&app, &ctx);
+}
+
+#[tauri::command]
+pub fn set_master_volume(value: f32, app: AppHandle, ctx: State<'_, Ctx>) {
+    {
+        let mut a = lock(&ctx.shared);
+        a.engine.set_master(value);
+        a.config.master_volume = value.clamp(0.0, 1.0);
+        a.save();
+    }
+    emit_state(&app, &ctx);
+}
+
+#[tauri::command]
+pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let s = a.config.sound_mut(&id).ok_or("That sound no longer exists")?;
+        s.volume = value.clamp(0.0, 1.0);
+        a.engine.set_sound_volume(&id, value);
+        a.save();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+/// Imports each path; returns one message per rejected file.
+#[tauri::command]
+pub fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Vec<String> {
+    let mut rejected = Vec::new();
+    {
+        let mut a = lock(&ctx.shared);
+        for p in &paths {
+            match a.library.import_sound(Path::new(p)) {
+                Ok(s) => a.config.sounds.push(s),
+                Err(e) => rejected.push(e.to_string()),
+            }
+        }
+        a.save();
+    }
+    emit_state(&app, &ctx);
+    rejected
+}
+
+#[tauri::command]
+pub fn rename_sound(id: String, name: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    mutate(&ctx, |a| {
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.name = name;
+        a.save();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_sound(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let idx = a.config.sounds.iter().position(|s| s.id == id).ok_or("That sound no longer exists")?;
+        let sound = a.config.sounds.remove(idx);
+        if let Err(e) = a.library.delete_sound(&sound) {
+            log::warn!("delete files failed: {e}");
+        }
+        a.engine.invalidate(&id);
+        a.save();
+        Ok(())
+    })?;
+    rebind_hotkeys(&app);
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_sound_image(id: String, path: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let mut sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
+        a.library.import_image(&mut sound, Path::new(&path)).map_err(|e| e.to_string())?;
+        *a.config.sound_mut(&id).ok_or("That sound no longer exists")? = sound;
+        a.save();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_sound_image(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let mut sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
+        a.library.remove_image(&mut sound).map_err(|e| e.to_string())?;
+        *a.config.sound_mut(&id).ok_or("That sound no longer exists")? = sound;
+        a.save();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_sounds(ids: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        if ids.len() != a.config.sounds.len() || !ids.iter().all(|id| a.config.sound(id).is_some()) {
+            return Err("The sound list changed, try again".into());
+        }
+        let mut old = std::mem::take(&mut a.config.sounds);
+        for id in &ids {
+            if let Some(i) = old.iter().position(|s| &s.id == id) {
+                a.config.sounds.push(old.remove(i));
+            }
+        }
+        a.save();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_hotkey(id: String, accelerator: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let accel = hotkeys::validate_binding(&a.config, &accelerator, Owner::Sound(&id)).map_err(|e| e.to_string())?;
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.hotkey = Some(accel);
+        a.save();
+        Ok(())
+    })?;
+    rebind_hotkeys(&app);
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_hotkey(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.hotkey = None;
+        a.save();
+        Ok(())
+    })?;
+    rebind_hotkeys(&app);
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_stop_all_hotkey(accelerator: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        let accel = hotkeys::validate_binding(&a.config, &accelerator, Owner::StopAll).map_err(|e| e.to_string())?;
+        a.config.stop_all_hotkey = accel;
+        a.save();
+        Ok(())
+    })?;
+    rebind_hotkeys(&app);
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) {
+    {
+        let mut a = lock(&ctx.shared);
+        a.config.devices = Devices {
+            speakers: speakers.filter(|s| !s.is_empty()),
+            virtual_mic: virtual_mic.filter(|s| !s.is_empty()),
+        };
+        let outputs = a.outputs();
+        a.engine.set_outputs(outputs);
+        a.warned_devices.clear();
+        a.save();
+    }
+    emit_state(&app, &ctx);
+}
+
+#[tauri::command]
+pub fn test_tone(device: Option<String>, ctx: State<'_, Ctx>) -> Result<(), String> {
+    lock(&ctx.shared)
+        .engine
+        .test_tone(&DeviceTarget::from_name(device.as_deref()))
+        .map(|_| ())
+        .map_err(|e| format!("Test tone failed: {e}"))
+}
+
+#[tauri::command]
+pub fn set_remote_port(port: u16, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    if port < 1024 {
+        return Err("Port must be between 1024 and 65535".into());
+    }
+    {
+        let mut a = lock(&ctx.shared);
+        a.config.remote.port = port;
+        a.save();
+    }
+    remote_glue::start(&app);
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+/// `Some(pin)` sets a PIN, `None` removes it. Either way every phone token is invalidated.
+#[tauri::command]
+pub fn set_pin(pin: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let hash = match pin.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) if !auth::valid_pin_format(p) => return Err("PIN must be 4 to 8 digits".into()),
+        Some(p) => Some(auth::hash_pin(p)),
+        None => None,
+    };
+    {
+        let mut a = lock(&ctx.shared);
+        a.config.remote.pin_hash = hash;
+        a.config.remote.token_secret = config::new_secret();
+        a.save();
+    }
+    ctx.hub.kick_all();
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restart_remote(app: AppHandle) {
+    remote_glue::start(&app);
+}
