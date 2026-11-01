@@ -3,6 +3,7 @@ mod hotkeys_glue;
 mod remote_glue;
 mod state;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ use state::{emit_state, emit_toast, lock, App, Ctx, Shared, CACHE_BYTES};
 pub fn run() {
     env_logger::init();
     tauri::Builder::default()
+        // Must be the first plugin: a second launch brings the existing window up and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -28,10 +31,10 @@ pub fn run() {
         ))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let to_tray = window
-                    .app_handle()
-                    .try_state::<Ctx>()
-                    .is_some_and(|ctx| lock(&ctx.shared).config.startup.close_to_tray);
+                // Without a tray icon there is no way back, so the close goes through and quits.
+                let to_tray = window.app_handle().try_state::<Ctx>().is_some_and(|ctx| {
+                    ctx.tray_ok.load(Ordering::Relaxed) && lock(&ctx.shared).config.startup.close_to_tray
+                });
                 if to_tray {
                     api.prevent_close();
                     if let Err(e) = window.hide() {
@@ -71,18 +74,18 @@ pub fn run() {
             notices.extend(app_state.passthrough_toast());
             app_state.startup_notices = notices;
             let shared: Shared = Arc::new(Mutex::new(app_state));
-            app.manage(Ctx { shared: shared.clone(), hub: Hub::new(), remote: Mutex::new(None) });
+            app.manage(Ctx { shared: shared.clone(), hub: Hub::new(), remote: Mutex::new(None),
+                tray_ok: AtomicBool::new(false),
+            });
             state::spawn_warm(shared, None);
 
             let handle = app.handle().clone();
             sync_autostart(&handle);
-            let tray_ok = match build_tray(&handle) {
-                Ok(()) => true,
-                Err(e) => {
-                    log::error!("tray icon failed: {e}");
-                    false
-                }
-            };
+            match build_tray(&handle) {
+                Ok(()) => handle.state::<Ctx>().tray_ok.store(true, Ordering::Relaxed),
+                Err(e) => log::error!("tray icon failed: {e}"),
+            }
+            let tray_ok = handle.state::<Ctx>().tray_ok.load(Ordering::Relaxed);
             // The window is created hidden (tauri.conf.json), so a minimized start never flashes.
             // Without a tray icon there would be no way back to a hidden window, so it shows anyway.
             if !(tray_ok && start_hidden(&handle)) {

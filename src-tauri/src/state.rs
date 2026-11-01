@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::IpAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -51,6 +52,9 @@ pub struct Ctx {
     pub shared: Shared,
     pub hub: Hub,
     pub remote: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// True once the tray icon exists. Hiding the window (close to tray, minimized start) is only
+    /// allowed then, so a hidden window can always be brought back.
+    pub tray_ok: AtomicBool,
 }
 
 pub fn lock(shared: &Shared) -> MutexGuard<'_, App> {
