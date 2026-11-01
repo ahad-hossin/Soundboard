@@ -43,6 +43,11 @@ impl BufferCache {
         }
     }
 
+    /// Duration of a cached clip without touching its LRU position.
+    pub fn duration_secs(&self, id: &str) -> Option<f32> {
+        self.entries.get(id).map(|b| b.duration_secs())
+    }
+
     pub fn contains(&self, id: &str) -> bool {
         self.entries.contains_key(id)
     }

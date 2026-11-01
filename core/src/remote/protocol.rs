@@ -8,6 +8,10 @@ pub struct RemoteSound {
     pub has_image: bool,
     /// Tile color as `#RRGGBB`.
     pub color: String,
+    /// Clip length in seconds once decoded; None until the decode cache has it.
+    pub duration_secs: Option<f32>,
+    /// Bumped on every successful play so clients can restart the progress sweep.
+    pub play_seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,12 +37,12 @@ mod tests {
         let m = ServerMsg::State {
             master_volume: 0.8,
             playing: vec!["u1".into()],
-            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: true, color: "#FF595E".into() }],
+            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: true, color: "#FF595E".into(), duration_secs: Some(2.5), play_seq: 3 }],
         };
         let json = serde_json::to_string(&m).unwrap();
         assert_eq!(
             json,
-            r##"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true,"color":"#FF595E"}]}"##
+            r##"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true,"color":"#FF595E","duration_secs":2.5,"play_seq":3}]}"##
         );
     }
 

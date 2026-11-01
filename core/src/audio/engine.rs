@@ -243,6 +243,11 @@ impl<B: AudioBackend> Engine<B> {
         self.cache.contains(sound_id)
     }
 
+    /// Length of the cached decode in seconds, or None when the sound is not cached.
+    pub fn cached_duration(&self, sound_id: &str) -> Option<f32> {
+        self.cache.duration_secs(sound_id)
+    }
+
     /// Adds a buffer decoded elsewhere (outside any lock) ahead of the first play.
     /// Never evicts: returns false and drops the buffer when the cache has no room for it.
     pub fn insert_cached(&mut self, sound_id: &str, buffer: DecodedBuffer) -> bool {
@@ -559,6 +564,21 @@ mod tests {
         // Path no longer needed: play hits the cache instead of decoding.
         e.play_file("a", 1.0, Path::new("Z:/gone.wav")).unwrap();
         assert_eq!(e.cached(), 1);
+    }
+
+    #[test]
+    fn cached_duration_is_none_before_and_some_after_insert() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 500);
+        let mut e = engine(both(), 1.0);
+        assert_eq!(e.cached_duration("a"), None);
+        let buf = decode_file(&p).unwrap();
+        let expected = buf.duration_secs();
+        assert!(e.insert_cached("a", buf));
+        assert_eq!(e.cached_duration("a"), Some(expected));
+        e.invalidate("a");
+        assert_eq!(e.cached_duration("a"), None);
     }
 
     #[test]

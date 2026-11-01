@@ -28,6 +28,10 @@ main{flex:1;overflow-y:auto;padding:8px}
 .tile{position:relative;aspect-ratio:1;border:0;border-radius:var(--radius);background:var(--c,var(--surface-2));overflow:hidden;text-align:left;padding:0;transition:transform .08s}
 .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
 .tile .name{position:absolute;left:0;right:0;bottom:0;padding:8px;padding-top:24px;color:#fff;background:linear-gradient(to top,rgba(0,0,0,.72),transparent);font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile .sweep{position:absolute;left:0;bottom:0;height:2px;width:0;background:rgba(255,255,255,.85);animation:sweep linear forwards;pointer-events:none}
+.tile .sweep.indeterminate{width:100%;animation:pulse 1s ease-in-out infinite alternate}
+@keyframes sweep{from{width:0}to{width:100%}}
+@keyframes pulse{from{opacity:.4}to{opacity:.9}}
 .tile .bar{display:none;position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--c)}
 .tile.img .bar{display:block}
 .tile.playing{box-shadow:0 0 0 2px var(--accent)}
@@ -82,6 +86,48 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
   const buzz = () => { if (navigator.vibrate) navigator.vibrate(10); };
   const nextBackoff = () => { const b = backoff; backoff = Math.min(backoff * 2, 8000); return b; };
 
+  // Tile decoration for sounds without an image; mirrors `src/lib/decor.ts`.
+  const HIGHLIGHT = "radial-gradient(circle at 25% 20%, rgba(255,255,255,0.22), transparent 60%)";
+  const MOTIFS = [
+    ["radial-gradient(circle closest-side, rgba(255,255,255,0.12) 99%, transparent 100%)", "110% 110%", "-300% -350%", "no-repeat"],
+    ["radial-gradient(circle closest-side, transparent calc(100% - 4px), rgba(255,255,255,0.13) calc(100% - 3.5px), rgba(255,255,255,0.13) calc(100% - 0.5px), transparent 100%)", "70% 70%", "150% -33.333%", "no-repeat"],
+    ["linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.13) 40%, rgba(255,255,255,0.13) 58%, transparent 58%)", "100% 100%", "0 0", "no-repeat"],
+    ["radial-gradient(rgba(255,255,255,0.14) 1.5px, transparent 1.6px)", "14px 14px", "0 0", "repeat"],
+  ];
+  function motifIndex(id) {
+    let sum = 0;
+    for (let i = 0; i < id.length; i++) sum += id.charCodeAt(i);
+    return sum % MOTIFS.length;
+  }
+  function decorate(el, s) {
+    const st = el.style;
+    if (s.has_image) {
+      st.backgroundImage = st.backgroundSize = st.backgroundPosition = st.backgroundRepeat = "";
+      return;
+    }
+    const [image, size, position, repeat] = MOTIFS[motifIndex(s.id)];
+    st.backgroundImage = `${HIGHLIGHT}, ${image}`;
+    st.backgroundSize = `100% 100%, ${size}`;
+    st.backgroundPosition = `0 0, ${position}`;
+    st.backgroundRepeat = `no-repeat, ${repeat}`;
+  }
+
+  // The progress sweep lives only while the tile plays; a new play_seq replaces the node so it restarts.
+  function syncSweep(el, s, isPlaying) {
+    let sweep = el.querySelector(".sweep");
+    if (!isPlaying) { if (sweep) sweep.remove(); return; }
+    const seq = String(s.play_seq);
+    const dur = s.duration_secs;
+    if (sweep && sweep.dataset.seq === seq) return;
+    if (sweep) sweep.remove();
+    sweep = document.createElement("span");
+    sweep.className = dur == null ? "sweep indeterminate" : "sweep";
+    sweep.dataset.seq = seq;
+    sweep.setAttribute("aria-hidden", "true");
+    if (dur != null) sweep.style.animationDuration = `${dur}s`;
+    el.appendChild(sweep);
+  }
+
   function render() {
     if (!state) return;
     if (!masterDragging) master.value = state.master_volume;
@@ -115,8 +161,10 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
       el.querySelector(".name").textContent = s.name;
       el.setAttribute("aria-label", s.name);
       el.style.setProperty("--c", s.color);
+      decorate(el, s);
       el.classList.toggle("img", s.has_image);
       el.classList.toggle("playing", playing.has(s.id));
+      syncSweep(el, s, playing.has(s.id));
       grid.appendChild(el); // re-append keeps server order
     }
     for (const el of [...grid.children]) if (!seen.has(el.dataset.id)) el.remove();
