@@ -73,6 +73,8 @@ pub struct Engine<B: AudioBackend> {
     default_device: Option<String>,
     /// Last mic passthrough start failure; cleared by the next successful apply.
     passthrough_error: Option<String>,
+    /// (microphone, virtual mic) of the last successful passthrough start; None when stopped or failed.
+    passthrough_key: Option<(String, String)>,
 }
 
 fn default_name(devices: &[DeviceInfo]) -> Option<String> {
@@ -93,6 +95,7 @@ impl<B: AudioBackend> Engine<B> {
             next_instance: 1,
             default_device,
             passthrough_error: None,
+            passthrough_key: None,
         }
     }
 
@@ -108,21 +111,32 @@ impl<B: AudioBackend> Engine<B> {
         self.backend.input_devices()
     }
 
-    /// Re-enumerates devices, remembers which one is the default, restarts mic passthrough
-    /// (see `passthrough_error`), and returns the output list.
+    /// Re-enumerates devices, remembers which one is the default, makes sure mic passthrough
+    /// runs as configured without interrupting a healthy one (see `ensure_passthrough`),
+    /// and returns the output list.
     pub fn refresh_devices(&mut self) -> Vec<DeviceInfo> {
         let devices = self.backend.devices();
         self.default_device = default_name(&devices);
-        let _ = self.apply_passthrough();
+        let _ = self.ensure_passthrough();
         devices
     }
 
-    /// Starts (or restarts) mic passthrough when both a microphone and a virtual mic are
-    /// configured, otherwise stops it. Returns whether passthrough is now running.
+    /// (microphone, virtual mic) when both are configured, i.e. when passthrough should run.
+    fn desired_passthrough(&self) -> Option<(String, String)> {
+        match (&self.outputs.microphone, &self.outputs.virtual_mic) {
+            (Some(mic), Some(virtual_mic)) => Some((mic.clone(), virtual_mic.clone())),
+            _ => None,
+        }
+    }
+
+    /// Forced path: starts (or restarts) mic passthrough when both a microphone and a virtual
+    /// mic are configured, otherwise stops it. Returns whether passthrough is now running.
     /// The outcome is also kept for `passthrough_error`.
     pub fn apply_passthrough(&mut self) -> Result<bool, AudioError> {
-        let result = match (&self.outputs.microphone, &self.outputs.virtual_mic) {
-            (Some(mic), Some(virtual_mic)) => self
+        self.passthrough_key = None;
+        let desired = self.desired_passthrough();
+        let result = match &desired {
+            Some((mic, virtual_mic)) => self
                 .backend
                 .start_passthrough(
                     &DeviceTarget::from_name(Some(mic)),
@@ -130,13 +144,28 @@ impl<B: AudioBackend> Engine<B> {
                     self.outputs.mic_gain,
                 )
                 .map(|()| true),
-            _ => {
+            None => {
                 self.backend.stop_passthrough();
                 Ok(false)
             }
         };
         self.passthrough_error = result.as_ref().err().map(|e| e.to_string());
+        if matches!(result, Ok(true)) {
+            self.passthrough_key = desired;
+        }
         result
+    }
+
+    /// Gentle path: leaves a healthy passthrough on the configured devices alone (no backend
+    /// start or stop, so no audible gap), otherwise falls back to `apply_passthrough`.
+    pub fn ensure_passthrough(&mut self) -> Result<bool, AudioError> {
+        let desired = self.desired_passthrough();
+        let healthy = self.passthrough_error.is_none() && desired == self.passthrough_key;
+        match desired {
+            Some(_) if healthy && self.backend.passthrough_active() => Ok(true),
+            None if healthy => Ok(false),
+            _ => self.apply_passthrough(),
+        }
     }
 
     /// The last passthrough start failure, if the most recent apply failed.
@@ -155,10 +184,11 @@ impl<B: AudioBackend> Engine<B> {
     }
 
     /// Stops everything, drops device streams, switches outputs, and restarts mic
-    /// passthrough (see `passthrough_error`).
+    /// passthrough (see `passthrough_error`). The reset always ends a running passthrough.
     pub fn set_outputs(&mut self, mut outputs: Outputs) {
         self.stop_all();
         self.backend.reset();
+        self.passthrough_key = None;
         outputs.mic_gain = clamp_mic_gain(outputs.mic_gain);
         self.outputs = outputs;
         self.default_device = default_name(&self.backend.devices());
@@ -622,13 +652,52 @@ mod tests {
         assert_eq!(e.passthrough_error(), None);
     }
 
+    fn starts(e: &Engine<FakeBackend>) -> usize {
+        passthrough_calls(e).into_iter().filter(|c| matches!(c, Call::StartPassthrough { .. })).count()
+    }
+
     #[test]
-    fn refresh_devices_restarts_passthrough() {
+    fn refresh_devices_leaves_a_healthy_passthrough_alone() {
         let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
         e.refresh_devices();
         e.refresh_devices();
-        let starts = passthrough_calls(&e).into_iter().filter(|c| matches!(c, Call::StartPassthrough { .. })).count();
-        assert_eq!(starts, 2);
+        assert_eq!(starts(&e), 1, "second refresh must not reopen the mic");
+        assert_eq!(passthrough_calls(&e).len(), 1, "and must not stop it either");
+        e.set_mic_gain(0.5);
+        e.refresh_devices();
+        assert_eq!(starts(&e), 1, "a gain change never restarts");
+    }
+
+    #[test]
+    fn refresh_after_a_failed_start_retries() {
+        let mut e = mic_engine(Outputs::default());
+        e.set_outputs(with_mic(Some("USB Mic"), Some("CABLE Input")));
+        assert!(e.passthrough_error().unwrap().contains("microphone not found"));
+        e.backend().plug_input("USB Mic");
+        e.refresh_devices();
+        assert_eq!(starts(&e), 1, "the failed start was retried");
+        assert_eq!(e.passthrough_error(), None);
+    }
+
+    #[test]
+    fn refresh_restarts_when_the_backend_reports_inactive() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        e.refresh_devices();
+        e.backend().kill_passthrough();
+        e.refresh_devices();
+        assert_eq!(starts(&e), 2);
+        assert!(e.backend().passthrough_active());
+    }
+
+    #[test]
+    fn refresh_without_mic_does_not_touch_the_backend_twice() {
+        let mut e = mic_engine(with_mic(None, Some("CABLE Input")));
+        e.refresh_devices();
+        assert!(passthrough_calls(&e).is_empty(), "nothing started, nothing to stop");
+        e.set_outputs(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        e.outputs.microphone = None;
+        e.refresh_devices();
+        assert_eq!(passthrough_calls(&e).last(), Some(&Call::StopPassthrough), "a dropped mic is stopped");
     }
 
     #[test]

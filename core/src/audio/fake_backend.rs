@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
@@ -18,11 +18,12 @@ pub enum Call {
 /// Records every call; the first device name given (output or input) is the default device.
 pub struct FakeBackend {
     devices: Vec<DeviceInfo>,
-    inputs: Vec<DeviceInfo>,
+    inputs: Mutex<Vec<DeviceInfo>>,
     next: AtomicU64,
     calls: Mutex<Vec<Call>>,
     finished: Mutex<HashSet<SinkHandle>>,
     gains: Mutex<HashMap<SinkHandle, f32>>,
+    passthrough: AtomicBool,
 }
 
 fn infos(names: &[&str]) -> Vec<DeviceInfo> {
@@ -38,11 +39,12 @@ impl FakeBackend {
     pub fn with_inputs(outputs: &[&str], inputs: &[&str]) -> Self {
         Self {
             devices: infos(outputs),
-            inputs: infos(inputs),
+            inputs: Mutex::new(infos(inputs)),
             next: AtomicU64::new(1),
             calls: Mutex::new(Vec::new()),
             finished: Mutex::new(HashSet::new()),
             gains: Mutex::new(HashMap::new()),
+            passthrough: AtomicBool::new(false),
         }
     }
 
@@ -67,6 +69,16 @@ impl FakeBackend {
 
     pub fn gain(&self, handle: SinkHandle) -> Option<f32> {
         self.gains.lock().unwrap().get(&handle).copied()
+    }
+
+    /// Simulates plugging in a microphone after construction.
+    pub fn plug_input(&self, name: &str) {
+        self.inputs.lock().unwrap().push(DeviceInfo { name: name.to_string(), is_default: false });
+    }
+
+    /// Simulates the passthrough dying on its own (output stream dropped).
+    pub fn kill_passthrough(&self) {
+        self.passthrough.store(false, Ordering::SeqCst);
     }
 }
 
@@ -108,15 +120,16 @@ impl AudioBackend for FakeBackend {
 
     fn reset(&self) {
         self.calls.lock().unwrap().push(Call::Reset);
+        self.passthrough.store(false, Ordering::SeqCst);
     }
 
     fn input_devices(&self) -> Vec<DeviceInfo> {
-        self.inputs.clone()
+        self.inputs.lock().unwrap().clone()
     }
 
     fn start_passthrough(&self, input: &DeviceTarget, output: &DeviceTarget, gain: f32) -> Result<(), AudioError> {
         if let DeviceTarget::Named(n) = input {
-            if !self.inputs.iter().any(|d| &d.name == n) {
+            if !self.inputs.lock().unwrap().iter().any(|d| &d.name == n) {
                 return Err(AudioError::InputDeviceNotFound(n.clone()));
             }
         }
@@ -126,15 +139,21 @@ impl AudioBackend for FakeBackend {
             }
         }
         self.calls.lock().unwrap().push(Call::StartPassthrough { input: input.clone(), output: output.clone(), gain });
+        self.passthrough.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     fn stop_passthrough(&self) {
         self.calls.lock().unwrap().push(Call::StopPassthrough);
+        self.passthrough.store(false, Ordering::SeqCst);
     }
 
     fn set_passthrough_gain(&self, gain: f32) {
         self.calls.lock().unwrap().push(Call::SetPassthroughGain(gain));
+    }
+
+    fn passthrough_active(&self) -> bool {
+        self.passthrough.load(Ordering::SeqCst)
     }
 }
 
@@ -178,9 +197,12 @@ mod tests {
         assert!(matches!(err, AudioError::InputDeviceNotFound(n) if n == "Ghost Mic"));
         let err = f.start_passthrough(&DeviceTarget::Default, &DeviceTarget::Named("Ghost".into()), 1.0).unwrap_err();
         assert!(matches!(err, AudioError::DeviceNotFound(n) if n == "Ghost"));
+        assert!(!f.passthrough_active(), "failed starts leave it inactive");
         f.start_passthrough(&DeviceTarget::Named("Headset Mic".into()), &cable, 0.5).unwrap();
+        assert!(f.passthrough_active());
         f.set_passthrough_gain(1.5);
         f.stop_passthrough();
+        assert!(!f.passthrough_active());
         assert_eq!(
             f.calls(),
             vec![

@@ -81,4 +81,6 @@ pub trait AudioBackend: Send + Sync {
     fn start_passthrough(&self, input: &DeviceTarget, output: &DeviceTarget, gain: f32) -> Result<(), AudioError>;
     fn stop_passthrough(&self);
     fn set_passthrough_gain(&self, gain: f32);
+    /// True while a started passthrough is still running (not stopped, reset or dropped with its output stream).
+    fn passthrough_active(&self) -> bool;
 }

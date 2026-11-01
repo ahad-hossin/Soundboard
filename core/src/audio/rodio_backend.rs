@@ -193,6 +193,7 @@ enum Cmd {
     StartPassthrough { input: DeviceTarget, output: DeviceTarget, gain: f32, reply: Sender<Result<(), AudioError>> },
     StopPassthrough,
     SetPassthroughGain(f32),
+    PassthroughActive(Sender<bool>),
     Play { target: DeviceTarget, buffer: DecodedBuffer, gain: f32, reply: Sender<Result<SinkHandle, AudioError>> },
     Stop(SinkHandle),
     SetGain(SinkHandle, f32),
@@ -286,6 +287,14 @@ impl AudioBackend for RodioBackend {
     fn set_passthrough_gain(&self, gain: f32) {
         let _ = self.tx.send(Cmd::SetPassthroughGain(gain));
     }
+
+    fn passthrough_active(&self) -> bool {
+        let (tx, rx) = mpsc::channel();
+        if self.tx.send(Cmd::PassthroughActive(tx)).is_err() {
+            return false;
+        }
+        rx.recv().unwrap_or(false)
+    }
 }
 
 struct AudioThread {
@@ -326,6 +335,9 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 if let Some(p) = &st.passthrough {
                     p.sink.set_volume(g);
                 }
+            }
+            Cmd::PassthroughActive(reply) => {
+                let _ = reply.send(st.passthrough.is_some());
             }
             Cmd::Play { target, buffer, gain, reply } => {
                 let _ = reply.send(st.play(&target, &buffer, gain));
@@ -646,6 +658,7 @@ mod tests {
         let _ = b.input_devices();
         b.stop_passthrough();
         b.set_passthrough_gain(0.5);
+        assert!(!b.passthrough_active());
     }
 
     #[test]
@@ -665,9 +678,11 @@ mod tests {
     fn passthrough_default_mic_to_default_output() {
         let b = RodioBackend::new();
         b.start_passthrough(&DeviceTarget::Default, &DeviceTarget::Default, 0.5).unwrap();
+        assert!(b.passthrough_active());
         std::thread::sleep(std::time::Duration::from_millis(300));
         b.set_passthrough_gain(0.25);
         b.stop_passthrough();
+        assert!(!b.passthrough_active());
         // The audio thread is still responsive after stopping.
         let _ = b.devices();
     }
