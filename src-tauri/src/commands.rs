@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use soundboard_core::audio::DeviceTarget;
 use soundboard_core::config::{self, Devices};
 use soundboard_core::hotkeys::{self, Owner};
+use soundboard_core::library::Library;
 use soundboard_core::remote::auth;
 use tauri::{AppHandle, State};
 
@@ -70,20 +72,34 @@ pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, C
 
 /// Imports each path; returns one message per rejected file.
 #[tauri::command]
-pub fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Vec<String> {
-    let mut rejected = Vec::new();
-    {
-        let mut a = lock(&ctx.shared);
-        for p in &paths {
-            match a.library.import_sound(Path::new(p)) {
-                Ok(s) => a.config.sounds.push(s),
-                Err(e) => rejected.push(e.to_string()),
+pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<Vec<String>, String> {
+    // Short lock just to learn where the library lives; the heavy import runs unlocked.
+    let root = lock(&ctx.shared).library.root().to_path_buf();
+    let (imported, rejected) = tauri::async_runtime::spawn_blocking(move || {
+        let mut imported = Vec::new();
+        let mut rejected = Vec::new();
+        match Library::open(root) {
+            Ok(library) => {
+                for p in &paths {
+                    match library.import_sound(Path::new(p)) {
+                        Ok(s) => imported.push(s),
+                        Err(e) => rejected.push(e.to_string()),
+                    }
+                }
             }
+            Err(e) => rejected.push(format!("Could not open the sound library: {e}")),
         }
+        (imported, rejected)
+    })
+    .await
+    .map_err(|e| format!("Importing sounds failed: {e}"))?;
+    if !imported.is_empty() {
+        let mut a = lock(&ctx.shared);
+        a.config.sounds.extend(imported);
         a.save();
     }
     emit_state(&app, &ctx);
-    rejected
+    Ok(rejected)
 }
 
 #[tauri::command]
@@ -147,15 +163,27 @@ pub fn clear_sound_image(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Res
 #[tauri::command]
 pub fn reorder_sounds(ids: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
     mutate(&ctx, |a| {
-        if ids.len() != a.config.sounds.len() || !ids.iter().all(|id| a.config.sound(id).is_some()) {
+        let unique: HashSet<&String> = ids.iter().collect();
+        if unique.len() != ids.len()
+            || ids.len() != a.config.sounds.len()
+            || !ids.iter().all(|id| a.config.sound(id).is_some())
+        {
             return Err("The sound list changed, try again".into());
         }
         let mut old = std::mem::take(&mut a.config.sounds);
+        let mut reordered = Vec::with_capacity(old.len());
         for id in &ids {
             if let Some(i) = old.iter().position(|s| &s.id == id) {
-                a.config.sounds.push(old.remove(i));
+                reordered.push(old.remove(i));
             }
         }
+        if !old.is_empty() {
+            // Defense in depth: never drop sounds. Restore the original order and fail.
+            old.extend(reordered);
+            a.config.sounds = old;
+            return Err("The sound list changed, try again".into());
+        }
+        a.config.sounds = reordered;
         a.save();
         Ok(())
     })?;
@@ -211,8 +239,19 @@ pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: A
         };
         let outputs = a.outputs();
         a.engine.set_outputs(outputs);
+        a.available_devices = a.engine.devices();
         a.warned_devices.clear();
         a.save();
+    }
+    emit_state(&app, &ctx);
+}
+
+/// Re-enumerates output devices (slow); the Settings panel calls this when opened.
+#[tauri::command]
+pub fn refresh_devices(app: AppHandle, ctx: State<'_, Ctx>) {
+    {
+        let mut a = lock(&ctx.shared);
+        a.available_devices = a.engine.devices();
     }
     emit_state(&app, &ctx);
 }

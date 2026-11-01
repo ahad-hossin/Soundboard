@@ -66,18 +66,25 @@ impl RemoteHandler for Handler {
 /// (Re)starts the LAN server on the configured port. Safe to call any time.
 pub fn start(app: &AppHandle) {
     let ctx = app.state::<Ctx>();
-    if let Some(h) = ctx.remote.lock().unwrap().take() {
-        h.abort();
-        // The old server has no graceful shutdown; close its phones so they reconnect to the new port.
-        ctx.hub.kick_all();
-    }
-    let port = lock(&ctx.shared).config.remote.port;
+    let old = ctx.remote.lock().unwrap().take();
+    let port = {
+        let mut a = lock(&ctx.shared);
+        a.remote_port = None;
+        a.config.remote.port
+    };
     let handler: Arc<dyn RemoteHandler> = Arc::new(Handler { app: app.clone() });
     let router = remote::router(handler, ctx.hub.clone(), Arc::new(Mutex::new(Lockout::standard())));
 
     let app2 = app.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let ctx = app2.state::<Ctx>();
+        if let Some(h) = old {
+            // Wait for the old listener to be dropped, or bind could silently land on port+1.
+            h.abort();
+            let _ = h.await;
+            // The old server has no graceful shutdown; close its phones so they reconnect.
+            ctx.hub.kick_all();
+        }
         match remote::bind(port).await {
             Ok((listener, actual)) => {
                 {

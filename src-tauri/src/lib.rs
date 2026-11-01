@@ -41,6 +41,7 @@ pub fn run() {
                 virtual_mic: cfg.devices.virtual_mic.clone(),
             };
             let engine = Engine::new(RodioBackend::new(), outputs, cfg.master_volume, CACHE_BYTES);
+            let available_devices = engine.devices();
             let shared: Shared = Arc::new(Mutex::new(App {
                 config: cfg,
                 engine,
@@ -48,6 +49,7 @@ pub fn run() {
                 remote_port: None,
                 remote_error: None,
                 warned_devices: HashSet::new(),
+                available_devices,
                 startup_notices: notices,
             }));
             app.manage(Ctx { shared, hub: Hub::new(), remote: Mutex::new(None) });
@@ -82,6 +84,7 @@ pub fn run() {
             commands::clear_hotkey,
             commands::set_stop_all_hotkey,
             commands::set_devices,
+            commands::refresh_devices,
             commands::test_tone,
             commands::set_remote_port,
             commands::set_pin,

@@ -20,6 +20,8 @@ pub struct App {
     pub remote_error: Option<String>,
     /// Device names already reported as missing this session.
     pub warned_devices: HashSet<String>,
+    /// Cached output device list; enumerating is slow, so it is refreshed only on demand.
+    pub available_devices: Vec<DeviceInfo>,
     /// Shown once as toasts when the UI first loads.
     pub startup_notices: Vec<String>,
 }
@@ -123,7 +125,7 @@ impl App {
             devices: UiDevices {
                 speakers: self.config.devices.speakers.clone(),
                 virtual_mic: self.config.devices.virtual_mic.clone(),
-                available: self.engine.devices(),
+                available: self.available_devices.clone(),
             },
             stop_all_hotkey: self.config.stop_all_hotkey.clone(),
             remote: UiRemote {
