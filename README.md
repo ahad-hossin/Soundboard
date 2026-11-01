@@ -48,8 +48,9 @@ Output: `src-tauri/target/release/bundle/nsis/Soundboard_0.1.0_x64-setup.exe`.
 Install [VB-Cable](https://vb-audio.com/Cable/). In Soundboard Settings pick
 "CABLE Input" as the Virtual mic and your real speakers as Speakers. In Discord
 or your game, choose "CABLE Output" as the microphone. To keep your own voice,
-use VB-Audio's VoiceMeeter or Windows "Listen to this device" on your mic routed
-to CABLE Input.
+pick your real microphone under Settings > Microphone (Mic gain sets its level).
+The app mixes it into the cable together with the sounds, so Discord's
+microphone should be "CABLE Output" only. Your voice never plays on Speakers.
 
 ## Data
 
@@ -59,6 +60,7 @@ Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
 
 - [ ] Sound plays on speakers alone, virtual mic alone, both.
 - [ ] Discord test call hears the sound through the virtual mic.
+- [ ] With Settings > Microphone set, Discord hears your voice and the sounds together; your voice is not on Speakers.
 - [ ] Hotkey fires while a game window is focused.
 - [ ] Phone connects via QR, plays, sees playing highlight, Stop All works.
 - [ ] PIN required after setting; old phone token rejected after PIN change.
