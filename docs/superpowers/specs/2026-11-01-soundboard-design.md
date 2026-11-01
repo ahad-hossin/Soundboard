@@ -165,6 +165,11 @@ rendering and sending commands.
     "token_secret": "random-32-bytes-base64"
   },
   "stop_all_hotkey": "Ctrl+Shift+F12",
+  "startup": {
+    "autostart": false,
+    "start_minimized": false,
+    "close_to_tray": true
+  },
   "sounds": [
     {
       "id": "uuid",
@@ -196,6 +201,9 @@ rendering and sending commands.
   which invalidates all existing phone tokens.
 - Default Stop All hotkey is `Ctrl+Shift+F12`. (`Ctrl+Shift+Escape` is owned by
   Windows Task Manager and cannot be registered.)
+- `startup` holds the three desktop startup options (see "Startup and tray");
+  a missing key or field loads as `autostart` off, `start_minimized` off,
+  `close_to_tray` on.
 
 ### Storage location
 
@@ -399,6 +407,7 @@ Every volume control shows its value as a percent.
 - Speakers device dropdown + Test.
 - Virtual mic device dropdown + Test.
 - Stop All hotkey (capture control).
+- Startup: three checkboxes (see "Startup and tray").
 - Remote port (number input 1024 to 65535), applies on save by restarting the
   server.
 - PIN (set / clear), with the security statement underneath in `--text-mute`.
@@ -407,6 +416,28 @@ Every volume control shows its value as a percent.
 
 - URL(s), QR code (monochrome, on `--surface`), connected client count,
   firewall hint in `--text-mute`.
+
+### Startup and tray
+
+Settings > Startup has three checkboxes:
+
+- **Start with Windows** (`startup.autostart`): registers the app in the user's
+  Run key (`tauri-plugin-autostart`) with the `--minimized` argument, or removes
+  the entry. At launch the registration is synced to the saved value. If the
+  registry change fails, the other two options are still saved and a toast
+  explains.
+- **Start minimized to tray** (`startup.start_minimized`): the main window is
+  created hidden and only the tray icon shows. Launching with `--minimized`
+  (which the Windows startup entry does) has the same effect without the option.
+- **Close to tray** (`startup.close_to_tray`, default on): closing the window
+  hides it instead of quitting.
+
+The tray icon is always present while the app runs. It uses the app icon, has
+the tooltip "Soundboard", and a left click shows and focuses the window. Its
+menu is Show, Stop All, a separator, then Quit. Quit is the only way to exit
+once the window is closed to the tray. Hotkeys, the remote server and mic
+passthrough are not tied to the window, so they keep working while it is hidden.
+If the tray icon cannot be created the window is always shown.
 
 ## Error handling
 

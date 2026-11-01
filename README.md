@@ -43,6 +43,8 @@ npm run tauri build
 
 Output: `src-tauri/target/release/bundle/nsis/Soundboard_0.1.0_x64-setup.exe`.
 
+Settings > Startup can register the app to start with Windows (minimized to the tray).
+
 ## Virtual microphone
 
 Install [VB-Cable](https://vb-audio.com/Cable/). In Soundboard Settings pick
@@ -66,4 +68,6 @@ Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
 - [ ] PIN required after setting; old phone token rejected after PIN change.
 - [ ] Drag reorder persists after restart.
 - [ ] Unplugging the configured device: next play falls back to default with one toast.
+- [ ] Settings > Startup > Start with Windows adds a Run entry; after a reboot the app starts hidden in the tray and hotkeys work.
+- [ ] Closing the window hides it to the tray; tray left click shows it; tray menu Stop All and Quit work.
 - [ ] Corrupt `config.json` is backed up to `config.json.bak` and the app starts fresh with a toast.
