@@ -168,6 +168,17 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
+    /// True once when a passthrough this engine started has stopped on its own (for example its
+    /// output stream was dropped after the device vanished). It is then forgotten, so this does
+    /// not fire again until a later start succeeds, and the next `ensure_passthrough` restarts it.
+    pub fn passthrough_lost(&mut self) -> bool {
+        if self.passthrough_key.is_some() && !self.backend.passthrough_active() {
+            self.passthrough_key = None;
+            return true;
+        }
+        false
+    }
+
     /// The last passthrough start failure, if the most recent apply failed.
     pub fn passthrough_error(&self) -> Option<String> {
         self.passthrough_error.clone()
@@ -687,6 +698,28 @@ mod tests {
         e.refresh_devices();
         assert_eq!(starts(&e), 2);
         assert!(e.backend().passthrough_active());
+    }
+
+    #[test]
+    fn passthrough_lost_fires_once_and_ensure_restarts() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        assert!(!e.passthrough_lost(), "never started");
+        e.apply_passthrough().unwrap();
+        assert!(!e.passthrough_lost(), "still running");
+        e.backend().kill_passthrough();
+        assert!(e.passthrough_lost());
+        assert!(!e.passthrough_lost(), "reported once");
+        assert!(e.ensure_passthrough().unwrap());
+        assert_eq!(starts(&e), 2);
+        assert!(!e.passthrough_lost());
+    }
+
+    #[test]
+    fn passthrough_lost_is_silent_after_a_deliberate_stop() {
+        let mut e = mic_engine(with_mic(Some("Headset Mic"), Some("CABLE Input")));
+        e.apply_passthrough().unwrap();
+        e.set_outputs(with_mic(None, Some("CABLE Input")));
+        assert!(!e.passthrough_lost());
     }
 
     #[test]

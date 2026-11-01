@@ -103,14 +103,15 @@ pub fn run() {
         });
 }
 
-/// Every 100 ms drop finished sinks, write pending config changes, and push state
-/// when the playing set changed. A save failure is toasted once until a save succeeds.
+/// Every 100 ms drop finished sinks, write pending config changes, restart a mic passthrough
+/// that stopped on its own, and push state when the playing set changed. A save failure is
+/// toasted once until a save succeeds; a failed passthrough restart once per distinct error.
 fn spawn_reaper(app: AppHandle) {
     std::thread::Builder::new()
         .name("reaper".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(100));
-            let (changed, save_error) = {
+            let (changed, save_error, passthrough_error) = {
                 let ctx = app.state::<Ctx>();
                 let mut a = lock(&ctx.shared);
                 let changed = a.engine.reap();
@@ -123,10 +124,21 @@ fn spawn_reaper(app: AppHandle) {
                     }
                     Err(_) => None,
                 };
-                (changed, save_error)
+                // The restart is a round trip to the audio thread; it only happens after a loss.
+                let passthrough_error = if a.engine.passthrough_lost() {
+                    log::warn!("microphone passthrough stopped, restarting");
+                    let _ = a.engine.ensure_passthrough();
+                    a.passthrough_toast_with("Microphone passthrough stopped, restarting failed")
+                } else {
+                    None
+                };
+                (changed, save_error, passthrough_error)
             };
             if let Some(e) = save_error {
                 emit_toast(&app, "error", format!("Could not save settings: {e}"));
+            }
+            if let Some(t) = passthrough_error {
+                emit_toast(&app, "error", t);
             }
             if changed {
                 let ctx = app.state::<Ctx>();

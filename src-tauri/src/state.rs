@@ -153,6 +153,11 @@ impl App {
     /// Toast text for the engine's last passthrough failure, or None when passthrough
     /// worked or this exact failure was already reported. A success re-arms the toast.
     pub fn passthrough_toast(&mut self) -> Option<String> {
+        self.passthrough_toast_with("Microphone passthrough failed")
+    }
+
+    /// `passthrough_toast` with a caller-chosen lead-in, formatted as "{prefix}: {error}".
+    pub fn passthrough_toast_with(&mut self, prefix: &str) -> Option<String> {
         match self.engine.passthrough_error() {
             None => {
                 self.last_passthrough_error = None;
@@ -160,7 +165,7 @@ impl App {
             }
             Some(e) if self.last_passthrough_error.as_deref() == Some(e.as_str()) => None,
             Some(e) => {
-                let message = format!("Microphone passthrough failed: {e}");
+                let message = format!("{prefix}: {e}");
                 self.last_passthrough_error = Some(e);
                 Some(message)
             }
