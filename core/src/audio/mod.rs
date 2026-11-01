@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod cache;
+pub mod decode;
 pub mod fake_backend;
 
 pub use backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
