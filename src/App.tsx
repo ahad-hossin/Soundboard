@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { RemotePanel } from "./components/RemotePanel";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { TileGrid } from "./components/TileGrid";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
@@ -9,6 +11,7 @@ import { useStore } from "./lib/store";
 export default function App() {
   const init = useStore((s) => s.init);
   const state = useStore((s) => s.state);
+  const panel = useStore((s) => s.panel);
 
   useEffect(() => {
     void init();
@@ -36,6 +39,8 @@ export default function App() {
         <main className="min-w-0 flex-1 overflow-y-auto p-3">
           <TileGrid />
         </main>
+        {panel === "settings" && <SettingsPanel />}
+        {panel === "remote" && <RemotePanel />}
       </div>
       <Toasts />
     </div>
