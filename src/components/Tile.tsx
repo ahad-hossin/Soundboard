@@ -70,17 +70,20 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
           </span>
         )}
       </button>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        tabIndex={-1}
-        {...volume}
-        aria-label={`${sound.name} volume`}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="absolute inset-x-2 bottom-7 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-      />
+      <div className="absolute inset-x-2 bottom-7 flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 has-[:focus-visible]:opacity-100">
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          tabIndex={-1}
+          {...volume}
+          aria-label={`${sound.name} volume`}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="min-w-0 flex-1"
+        />
+        <span className="w-8 shrink-0 text-right font-mono text-[11px] tabular-nums text-white/85">{Math.round(volume.value * 100)}%</span>
+      </div>
     </div>
   );
 }

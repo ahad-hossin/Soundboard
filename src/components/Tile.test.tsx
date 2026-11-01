@@ -122,6 +122,15 @@ describe("Tile", () => {
     expect(onVolume).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the volume as a percent that follows the draft before release", () => {
+    const { onVolume } = renderTile();
+    expect(screen.getByText("70%")).toBeInTheDocument();
+    const slider = screen.getByLabelText("Airhorn volume");
+    fireEvent.change(slider, { target: { value: "0.35" } });
+    expect(screen.getByText("35%")).toBeInTheDocument();
+    expect(onVolume).not.toHaveBeenCalled();
+  });
+
   it("commits keyboard changes on key up and ignores a bare blur", () => {
     const { onVolume } = renderTile();
     const slider = screen.getByLabelText("Airhorn volume");

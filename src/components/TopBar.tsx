@@ -39,6 +39,7 @@ export function TopBar() {
           aria-label="Master volume"
           className="w-[120px]"
         />
+        <span className="w-10 text-right font-mono tabular-nums text-dim">{Math.round(master.value * 100)}%</span>
       </label>
 
       <button

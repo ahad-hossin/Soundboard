@@ -107,6 +107,11 @@ describe("SettingsPanel", () => {
     expect(within(mic).getByText("Old USB Mic (missing)")).toBeInTheDocument();
   });
 
+  it("shows the default mic gain as 100%", () => {
+    render(<SettingsPanel />);
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
   it("shows the mic gain and commits it on pointer up", () => {
     useStore.setState({ state: { ...base, devices: { ...base.devices, mic_gain: 1.25 } } });
     render(<SettingsPanel />);
@@ -114,9 +119,9 @@ describe("SettingsPanel", () => {
     expect(gain.min).toBe("0");
     expect(gain.max).toBe("2");
     expect(gain.step).toBe("0.05");
-    expect(screen.getByText("1.25x")).toBeInTheDocument();
+    expect(screen.getByText("125%")).toBeInTheDocument();
     fireEvent.change(gain, { target: { value: "1.5" } });
-    expect(screen.getByText("1.50x")).toBeInTheDocument();
+    expect(screen.getByText("150%")).toBeInTheDocument();
     expect(api.setMicGain).not.toHaveBeenCalled();
     fireEvent.pointerUp(gain);
     expect(api.setMicGain).toHaveBeenCalledWith(1.5);

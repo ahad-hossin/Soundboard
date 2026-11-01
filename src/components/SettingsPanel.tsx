@@ -69,7 +69,7 @@ export function SettingsPanel() {
         <label className="label" htmlFor="mic-gain">Mic gain</label>
         <div className="flex items-center gap-2">
           <input id="mic-gain" type="range" min={0} max={2} step={0.05} className="flex-1" {...micGain} />
-          <span className="w-12 text-right font-mono text-dim">{micGain.value.toFixed(2)}x</span>
+          <span className="w-12 text-right font-mono text-dim">{Math.round(micGain.value * 100)}%</span>
         </div>
       </div>
 
