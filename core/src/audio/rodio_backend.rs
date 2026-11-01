@@ -74,17 +74,23 @@ impl Source for SharedSource {
 
 /// Live microphone samples for the virtual mic sink, read from the ring the input callback fills.
 ///
-/// Never ends. An underrun yields silence; when more than `high_water` samples (100 ms) are
-/// queued the backlog is cut to about `high_water / 2`, so latency cannot creep upward.
-/// Silence and skips happen on whole frames so interleaved channels never swap.
+/// Never ends. Output stays silent until `prime_level` samples (20 ms) are queued, so the
+/// capture and playback callbacks have slack against each other's jitter; an underrun
+/// (empty at a frame boundary) goes back to silence and re-primes. When more than
+/// `high_water` samples (100 ms) are queued the backlog is cut to about `high_water / 2`,
+/// so latency cannot creep upward. Silence and skips happen on whole frames so interleaved
+/// channels never swap.
 struct MicSource {
     cons: HeapCons<f32>,
     channels: u16,
     sample_rate: u32,
     high_water: usize,
+    prime_level: usize,
+    /// Enough samples were queued to start reading; cleared by an underrun.
+    primed: bool,
     /// Index of the next sample within the current frame.
     pos: u16,
-    /// The current frame is being filled with silence (underrun at its start).
+    /// The current frame is being filled with silence.
     silent: bool,
 }
 
@@ -92,7 +98,8 @@ impl MicSource {
     fn new(cons: HeapCons<f32>, channels: u16, sample_rate: u32) -> Self {
         let channels = channels.max(1);
         let high_water = frames_for_ms(sample_rate, 100) * usize::from(channels);
-        Self { cons, channels, sample_rate, high_water, pos: 0, silent: false }
+        let prime_level = frames_for_ms(sample_rate, 20) * usize::from(channels);
+        Self { cons, channels, sample_rate, high_water, prime_level, primed: false, pos: 0, silent: true }
     }
 }
 
@@ -112,7 +119,14 @@ impl Iterator for MicSource {
                 let excess = occupied - self.high_water / 2;
                 self.cons.skip(excess - excess % channels);
             }
-            self.silent = self.cons.occupied_len() < channels;
+            let occupied = self.cons.occupied_len();
+            if self.primed && occupied < channels {
+                self.primed = false; // underrun: wait for a fresh cushion
+            }
+            if !self.primed && occupied >= self.prime_level {
+                self.primed = true;
+            }
+            self.silent = !self.primed;
         }
         let sample = if self.silent { 0.0 } else { self.cons.try_pop().unwrap_or(0.0) };
         self.pos = (self.pos + 1) % self.channels;
@@ -585,23 +599,47 @@ mod tests {
         HeapRb::<f32>::new(capacity).split()
     }
 
+    fn push_n(prod: &mut HeapProd<f32>, from: usize, n: usize) {
+        for i in from..from + n {
+            prod.try_push(i as f32).unwrap();
+        }
+    }
+
     #[test]
     fn mic_source_yields_pushed_samples_then_silence() {
+        // 1000 Hz mono: prime level 20 samples.
         let (mut prod, cons) = ring(1000);
-        for i in 0..5 {
-            prod.try_push(i as f32 * 0.1).unwrap();
-        }
+        push_n(&mut prod, 0, 25);
         let mut src = MicSource::new(cons, 1, 1000);
         assert_eq!(src.channels(), 1);
         assert_eq!(src.sample_rate(), 1000);
         assert_eq!(src.current_frame_len(), None);
         assert_eq!(src.total_duration(), None);
-        let out: Vec<f32> = src.by_ref().take(5).collect();
-        assert_eq!(out, vec![0.0, 0.1, 0.2, 0.3, 0.4]);
+        let out: Vec<f32> = src.by_ref().take(25).collect();
+        assert_eq!(out, (0..25).map(|i| i as f32).collect::<Vec<_>>());
         assert_eq!(src.next(), Some(0.0), "underrun is silence, not the end");
         assert_eq!(src.next(), Some(0.0));
-        prod.try_push(0.9).unwrap();
-        assert_eq!(src.next(), Some(0.9), "resumes when samples arrive");
+    }
+
+    #[test]
+    fn mic_source_primes_before_reading_and_re_primes_after_underrun() {
+        let (mut prod, cons) = ring(1000);
+        let mut src = MicSource::new(cons, 1, 1000);
+        assert_eq!(src.prime_level, 20);
+        push_n(&mut prod, 1, 19);
+        for _ in 0..5 {
+            assert_eq!(src.next(), Some(0.0), "below prime level: silence");
+        }
+        assert_eq!(src.cons.occupied_len(), 19, "nothing consumed while priming");
+        push_n(&mut prod, 20, 1);
+        let out: Vec<f32> = src.by_ref().take(20).collect();
+        assert_eq!(out, (1..=20).map(|i| i as f32).collect::<Vec<_>>(), "primed: reads everything");
+        // Drained to empty: the next frame is silence and a single new sample does not restart it.
+        assert_eq!(src.next(), Some(0.0));
+        push_n(&mut prod, 100, 1);
+        assert_eq!(src.next(), Some(0.0), "re-priming");
+        push_n(&mut prod, 101, 19);
+        assert_eq!(src.next(), Some(100.0), "primed again");
     }
 
     #[test]
@@ -610,9 +648,7 @@ mod tests {
         let (mut prod, cons) = ring(1000);
         let mut src = MicSource::new(cons, 1, 1000);
         assert_eq!(src.high_water, 100);
-        for i in 0..300 {
-            prod.try_push(i as f32).unwrap();
-        }
+        push_n(&mut prod, 0, 300);
         let first = src.next().unwrap();
         // 300 queued, cut to 50: the next sample comes from the tail.
         assert_eq!(first, 250.0);
@@ -622,21 +658,28 @@ mod tests {
 
     #[test]
     fn mic_source_keeps_stereo_frames_aligned() {
+        // 1000 Hz stereo: prime level 40 samples, high water 200.
         let (mut prod, cons) = ring(1000);
         let mut src = MicSource::new(cons, 2, 1000);
-        assert_eq!(src.high_water, 200);
-        // A lone left sample (half a frame) is not played until its right sample arrives.
-        prod.try_push(1.0).unwrap();
+        assert_eq!((src.prime_level, src.high_water), (40, 200));
+        let stereo = |prod: &mut HeapProd<f32>, from: usize, n: usize| {
+            for i in from..from + n {
+                prod.try_push(i as f32 + 1.0).unwrap();
+                prod.try_push(-(i as f32) - 1.0).unwrap();
+            }
+        };
+        // 20 frames plus a lone left sample: 20 frames play, then the half frame waits.
+        stereo(&mut prod, 0, 20);
+        prod.try_push(1000.0).unwrap();
+        let out: Vec<f32> = src.by_ref().take(40).collect();
+        assert!(out.chunks(2).all(|f| f[0] > 0.0 && f[1] == -f[0]), "{out:?}");
         assert_eq!(src.next(), Some(0.0));
         assert_eq!(src.next(), Some(0.0));
-        prod.try_push(-1.0).unwrap();
-        assert_eq!(src.next(), Some(1.0));
-        assert_eq!(src.next(), Some(-1.0));
+        assert_eq!(src.cons.occupied_len(), 1, "the half frame is not played alone");
         // Backlog skips cut whole frames: left samples stay positive, right negative.
-        for i in 0..301 {
-            prod.try_push(i as f32 + 1.0).unwrap();
-            prod.try_push(-(i as f32) - 1.0).unwrap();
-        }
+        let (mut prod, cons) = ring(1000);
+        let mut src = MicSource::new(cons, 2, 1000);
+        stereo(&mut prod, 0, 301);
         let l = src.next().unwrap();
         let r = src.next().unwrap();
         assert!(l > 0.0 && r < 0.0 && l == -r, "l={l} r={r}");
