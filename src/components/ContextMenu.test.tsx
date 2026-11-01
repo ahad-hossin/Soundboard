@@ -12,10 +12,14 @@ describe("ContextMenu", () => {
     expect(screen.getByText("Delete")).toHaveClass("text-danger");
   });
 
-  it("closes on Escape", () => {
+  it("closes on Escape without reaching the global Stop All handler", () => {
     const onClose = vi.fn();
+    const globalHandler = vi.fn();
+    window.addEventListener("keydown", globalHandler);
     render(<ContextMenu x={0} y={0} onClose={onClose} items={[{ label: "A", onSelect: vi.fn() }]} />);
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    window.removeEventListener("keydown", globalHandler);
     expect(onClose).toHaveBeenCalled();
+    expect(globalHandler).not.toHaveBeenCalled();
   });
 });

@@ -26,8 +26,9 @@ export function RemotePanel() {
     <aside className="panel">
       {urls.length === 0 && <p className="mb-3 text-dim">No network connection.</p>}
       {urls[0] && (
-        <div className="mb-4 inline-block rounded-md bg-surface p-3">
-          <QRCodeSVG value={urls[0]} size={160} bgColor="#141416" fgColor="#ededef" level="M" />
+        <div className="mb-4 inline-block overflow-hidden rounded-md">
+          {/* Dark modules on a light quiet zone: inverted codes fail on some phone scanners. */}
+          <QRCodeSVG value={urls[0]} size={176} bgColor="#ededef" fgColor="#0a0a0b" marginSize={2} level="M" />
         </div>
       )}
       <ul className="mb-4 space-y-1">

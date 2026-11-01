@@ -29,7 +29,11 @@ describe("RemotePanel", () => {
     render(<RemotePanel />);
     expect(screen.getByText("http://192.168.1.20:7331")).toBeInTheDocument();
     expect(screen.getByText("http://10.0.0.5:7331")).toBeInTheDocument();
-    expect(document.querySelector("svg")).toBeInTheDocument();
+    const qr = document.querySelector("svg")!;
+    expect(qr).toBeInTheDocument();
+    // Scanner-friendly polarity: light background, dark modules.
+    const fills = [...qr.querySelectorAll("path")].map((p) => p.getAttribute("fill"));
+    expect(fills).toEqual(["#ededef", "#0a0a0b"]);
     expect(screen.getByText(/2 phones connected/)).toBeInTheDocument();
   });
 

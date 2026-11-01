@@ -18,6 +18,7 @@ function Backdrop({ children, onCancel }: { children: ReactNode; onCancel: () =>
 
 interface ConfirmProps { title: string; confirmLabel: string; danger?: boolean; onConfirm: () => void; onCancel: () => void }
 
+/** Focus starts on Cancel so a stray Enter or Space never confirms a destructive action. */
 export function ConfirmDialog({ title, confirmLabel, danger, onConfirm, onCancel }: ConfirmProps) {
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => ref.current?.focus(), []);
@@ -25,8 +26,8 @@ export function ConfirmDialog({ title, confirmLabel, danger, onConfirm, onCancel
     <Backdrop onCancel={onCancel}>
       <p className="mb-4">{title}</p>
       <div className="flex justify-end gap-2">
-        <button type="button" className="btn" onClick={onCancel}>Cancel</button>
-        <button ref={ref} type="button" onClick={onConfirm} className={cx("btn", danger && "border-danger bg-danger text-white hover:bg-danger")}>
+        <button ref={ref} type="button" className="btn" onClick={onCancel}>Cancel</button>
+        <button type="button" onClick={onConfirm} className={cx("btn", danger && "border-danger bg-danger text-text hover:bg-danger")}>
           {confirmLabel}
         </button>
       </div>

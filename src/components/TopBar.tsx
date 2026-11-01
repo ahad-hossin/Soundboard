@@ -44,10 +44,10 @@ export function TopBar() {
       <button
         type="button"
         onClick={() => run(api.stopAll())}
-        title={`Stop all (${displayAccel(state.stop_all_hotkey)})`}
-        className={cx("btn", playing ? "border-danger bg-danger text-white hover:bg-danger" : "border-danger text-danger")}
+        title={`Stop All (${displayAccel(state.stop_all_hotkey)})`}
+        className={cx("btn", playing ? "border-danger bg-danger text-text hover:bg-danger" : "border-danger text-danger")}
       >
-        Stop
+        Stop All
       </button>
 
       <button type="button" onClick={() => void pickAndAddSounds()} className="btn border-text bg-text text-bg hover:bg-text">

@@ -53,13 +53,24 @@ export function TileGrid() {
     { label: s.image_path ? "Change image" : "Set image", onSelect: () => void pickImageFor(s.id) },
     ...(s.image_path ? [{ label: "Remove image", onSelect: () => void run(api.clearSoundImage(s.id)) }] : []),
     { label: s.hotkey ? "Change hotkey" : "Set hotkey", onSelect: () => setCapturing(s) },
+    ...(s.hotkey ? [{ label: "Clear hotkey", onSelect: () => void run(api.clearHotkey(s.id)) }] : []),
     { label: "Delete", danger: true, onSelect: () => setDeleting(s) },
   ];
 
-  if (state.sounds.length === 0) return <EmptyState dragOver={dragOver} />;
+  const noDevices = !state.devices.speakers && !state.devices.virtual_mic;
+
+  if (state.sounds.length === 0) {
+    return (
+      <div className="flex h-full flex-col">
+        {noDevices && <Banner />}
+        <div className="min-h-0 flex-1">
+          <EmptyState dragOver={dragOver} />
+        </div>
+      </div>
+    );
+  }
 
   const playingSet = new Set([...state.playing, ...optimistic]);
-  const noDevices = !state.devices.speakers && !state.devices.virtual_mic;
 
   return (
     <div className={cx("min-h-full rounded-md border border-transparent", dragOver && "border-accent")}>
