@@ -52,6 +52,18 @@ These rules apply to both the desktop UI and the phone page.
    ten-color retro palette (`core/src/palette.rs`), assigned least-used-first at
    import and changeable from the context menu. Image tiles show it as a 3 px
    bottom bar.
+
+   *Tile decoration and play animation.* A tile without an image layers a soft
+   top-left highlight and one translucent white motif (circle, ring, diagonal
+   band or dots, 12 to 14 % opacity, CSS only) over its color, under the name
+   scrim. The motif is fixed per sound: the sum of the id's character codes
+   mod 4. Image tiles are not decorated. A playing tile keeps its accent ring
+   and gains a 2 px white progress bar along its bottom edge that grows
+   linearly over the clip's duration and restarts on every play, whether it
+   came from a click, a hotkey or the phone (the backend's per-sound play
+   counter drives the restart); when the duration is unknown the bar pulses
+   instead. Pressing a tile scales it to 96 % for the length of the press.
+   The phone page draws the same decoration, sweep and press feedback.
 3. **Images are the content.** A tile with an image is that image, edge to
    edge, with the name in a quiet label over a bottom scrim. A tile without an
    image is a flat surface with the name. Nothing else competes.
