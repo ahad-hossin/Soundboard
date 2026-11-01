@@ -11,16 +11,20 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", image_path: null, image_rev: 0, missing_file: false };
 
-function renderTile(over: Partial<UiSound> = {}, playing = false, onPlay = vi.fn(), onVolume = vi.fn()) {
-  const s = { ...sound, ...over };
-  render(
+function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void) {
+  return (
     <DndContext>
       <SortableContext items={[s.id]}>
         <Tile sound={s} playing={playing} onPlay={onPlay} onVolume={onVolume} onContextMenu={() => {}} />
       </SortableContext>
-    </DndContext>,
+    </DndContext>
   );
-  return { onPlay, onVolume };
+}
+
+function renderTile(over: Partial<UiSound> = {}, playing = false, onPlay = vi.fn(), onVolume = vi.fn()) {
+  const s = { ...sound, ...over };
+  const { rerender } = render(tree(s, playing, onPlay, onVolume));
+  return { onPlay, onVolume, rerender: (o: Partial<UiSound>) => rerender(tree({ ...s, ...o }, playing, onPlay, onVolume)) };
 }
 
 describe("Tile", () => {
@@ -49,7 +53,37 @@ describe("Tile", () => {
     const { onPlay, onVolume } = renderTile();
     fireEvent.click(screen.getByRole("button", { name: "Airhorn" }));
     expect(onPlay).toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("Airhorn volume"), { target: { value: "0.3" } });
+    const slider = screen.getByLabelText("Airhorn volume");
+    fireEvent.change(slider, { target: { value: "0.3" } });
+    expect(onVolume).not.toHaveBeenCalled();
+    fireEvent.pointerUp(slider);
     expect(onVolume).toHaveBeenCalledWith(0.3);
+    expect(onVolume).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits keyboard changes on key up and ignores a bare blur", () => {
+    const { onVolume } = renderTile();
+    const slider = screen.getByLabelText("Airhorn volume");
+    fireEvent.blur(slider);
+    expect(onVolume).not.toHaveBeenCalled();
+    fireEvent.change(slider, { target: { value: "0.5" } });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    expect(onVolume).toHaveBeenCalledWith(0.5);
+  });
+
+  it("keeps the dragged value until release, then follows props", () => {
+    const { rerender } = renderTile();
+    const slider = screen.getByLabelText("Airhorn volume") as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: "0.2" } });
+    rerender({ volume: 0.9 });
+    expect(slider.value).toBe("0.2");
+    fireEvent.pointerUp(slider);
+    rerender({ volume: 0.4 });
+    expect(slider.value).toBe("0.4");
+  });
+
+  it("slider is skipped by Tab", () => {
+    renderTile();
+    expect(screen.getByLabelText("Airhorn volume")).toHaveAttribute("tabindex", "-1");
   });
 });

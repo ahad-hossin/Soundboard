@@ -3,6 +3,7 @@ import { displayAccel } from "../lib/accel";
 import { api } from "../lib/api";
 import { cx } from "../lib/cx";
 import { useStore } from "../lib/store";
+import { useSliderDraft } from "../lib/useSliderDraft";
 
 function SpeakerGlyph() {
   return (
@@ -19,6 +20,7 @@ export function TopBar() {
   const panel = useStore((s) => s.panel);
   const togglePanel = useStore((s) => s.togglePanel);
   const playing = state.playing.length > 0;
+  const master = useSliderDraft(state.master_volume, (v) => void run(api.setMasterVolume(v)));
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
@@ -33,9 +35,8 @@ export function TopBar() {
           min={0}
           max={1}
           step={0.01}
-          value={state.master_volume}
+          {...master}
           aria-label="Master volume"
-          onChange={(e) => run(api.setMasterVolume(Number(e.target.value)))}
           className="w-[120px]"
         />
       </label>

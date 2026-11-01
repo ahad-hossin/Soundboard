@@ -205,9 +205,12 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     pad.appendChild(b);
   }
 
+  // Send once per gesture, not per input tick: each send is a config change on the desktop.
+  const commitMaster = () => { masterDragging = false; send({ type: "set_master_volume", value: Number(master.value) }); };
   master.addEventListener("pointerdown", () => { masterDragging = true; });
-  master.addEventListener("pointerup", () => { masterDragging = false; });
-  master.addEventListener("input", () => send({ type: "set_master_volume", value: Number(master.value) }));
+  master.addEventListener("pointerup", commitMaster);
+  master.addEventListener("change", commitMaster);
+  master.addEventListener("pointercancel", () => { masterDragging = false; });
   stop.addEventListener("click", () => { buzz(); send({ type: "stop_all" }); });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !ws) { clearTimeout(retryTimer); backoff = 500; boot(); }

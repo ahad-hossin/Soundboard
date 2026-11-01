@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -24,6 +25,14 @@ pub struct App {
     pub available_devices: Vec<DeviceInfo>,
     /// Shown once as toasts when the UI first loads.
     pub startup_notices: Vec<String>,
+    /// Config has changes not yet written; the reaper flushes it every tick.
+    pub dirty: bool,
+    /// A save failure has been shown; reset after the next successful write.
+    pub save_failed_reported: bool,
+    /// LAN addresses for the Remote panel, refreshed when the server starts or devices refresh.
+    pub addresses: Vec<String>,
+    /// Per sound id: (file missing, image mtime in seconds). Refreshed by `refresh_files`.
+    pub files: HashMap<String, (bool, u64)>,
 }
 
 pub type Shared = Arc<Mutex<App>>;
@@ -94,10 +103,58 @@ impl App {
         Outputs { speakers: self.config.devices.speakers.clone(), virtual_mic: self.config.devices.virtual_mic.clone() }
     }
 
-    pub fn save(&self) {
-        if let Err(e) = config::save(&self.library.config_path(), &self.config) {
-            log::error!("config save failed: {e}");
+    pub fn new(config: Config, engine: Engine<RodioBackend>, library: Library, available_devices: Vec<DeviceInfo>) -> Self {
+        let mut app = Self {
+            config,
+            engine,
+            library,
+            remote_port: None,
+            remote_error: None,
+            warned_devices: HashSet::new(),
+            available_devices,
+            startup_notices: Vec::new(),
+            dirty: false,
+            save_failed_reported: false,
+            addresses: Vec::new(),
+            files: HashMap::new(),
+        };
+        app.refresh_files();
+        app
+    }
+
+    /// Records that config changed; the reaper writes it within one tick.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Writes config if it changed. On error the flag stays set so the next tick retries.
+    pub fn flush(&mut self) -> io::Result<()> {
+        if !self.dirty {
+            return Ok(());
         }
+        config::save(&self.library.config_path(), &self.config)?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Re-stats every sound file and image. Call after import, delete and image changes.
+    pub fn refresh_files(&mut self) {
+        self.files = self
+            .config
+            .sounds
+            .iter()
+            .map(|s| {
+                let missing = !self.library.sound_path(s).exists();
+                let image_rev = self
+                    .library
+                    .image_path(s)
+                    .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (s.id.clone(), (missing, image_rev))
+            })
+            .collect();
     }
 
     /// Plays a sound; returns toasts for device fallbacks. Error string is user-facing.
@@ -105,6 +162,7 @@ impl App {
         let sound = self.config.sound(id).cloned().ok_or_else(|| "That sound no longer exists".to_string())?;
         let path = self.library.sound_path(&sound);
         if !path.exists() {
+            self.files.entry(sound.id.clone()).or_default().0 = true;
             return Err(format!("The file for \"{}\" is missing", sound.name));
         }
         let outcome = self
@@ -133,7 +191,7 @@ impl App {
                 port: self.remote_port,
                 error: self.remote_error.clone(),
                 pin_set: self.config.remote.pin_hash.is_some(),
-                addresses: lan_addresses(),
+                addresses: self.addresses.clone(),
                 clients: hub.client_count(),
             },
             sounds: self
@@ -141,21 +199,15 @@ impl App {
                 .sounds
                 .iter()
                 .map(|s| {
-                    let image = self.library.image_path(s);
-                    let image_rev = image
-                        .as_ref()
-                        .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                    let (missing_file, image_rev) = self.files.get(&s.id).copied().unwrap_or((false, 0));
                     UiSound {
                         id: s.id.clone(),
                         name: s.name.clone(),
                         volume: s.volume,
                         hotkey: s.hotkey.clone(),
-                        image_path: image.map(|p| p.to_string_lossy().into_owned()),
+                        image_path: self.library.image_path(s).map(|p| p.to_string_lossy().into_owned()),
                         image_rev,
-                        missing_file: !self.library.sound_path(s).exists(),
+                        missing_file,
                     }
                 })
                 .collect(),

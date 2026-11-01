@@ -8,13 +8,21 @@ use soundboard_core::library::Library;
 use soundboard_core::remote::auth;
 use tauri::{AppHandle, State};
 
-use crate::state::{emit_state, emit_toast, lock, App, Ctx, UiState};
+use crate::state::{emit_state, emit_toast, lan_addresses, lock, App, Ctx, UiState};
 use crate::{hotkeys_glue, remote_glue};
 
 /// Lock, mutate, unlock. The caller emits state afterwards.
 fn mutate<T>(ctx: &Ctx, f: impl FnOnce(&mut App) -> Result<T, String>) -> Result<T, String> {
     let mut app = lock(&ctx.shared);
     f(&mut app)
+}
+
+/// Writes security- and data-relevant changes right away instead of on the next reaper tick.
+/// A failure leaves the config dirty, so the reaper retries and shows the error toast.
+fn flush_now(a: &mut App) {
+    if let Err(e) = a.flush() {
+        log::error!("config save failed: {e}");
+    }
 }
 
 fn rebind_hotkeys(app: &AppHandle) {
@@ -52,7 +60,7 @@ pub fn set_master_volume(value: f32, app: AppHandle, ctx: State<'_, Ctx>) {
         let mut a = lock(&ctx.shared);
         a.engine.set_master(value);
         a.config.master_volume = value.clamp(0.0, 1.0);
-        a.save();
+        a.mark_dirty();
     }
     emit_state(&app, &ctx);
 }
@@ -63,7 +71,7 @@ pub fn set_sound_volume(id: String, value: f32, app: AppHandle, ctx: State<'_, C
         let s = a.config.sound_mut(&id).ok_or("That sound no longer exists")?;
         s.volume = value.clamp(0.0, 1.0);
         a.engine.set_sound_volume(&id, value);
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     emit_state(&app, &ctx);
@@ -96,7 +104,8 @@ pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>)
     if !imported.is_empty() {
         let mut a = lock(&ctx.shared);
         a.config.sounds.extend(imported);
-        a.save();
+        a.mark_dirty();
+        a.refresh_files();
     }
     emit_state(&app, &ctx);
     Ok(rejected)
@@ -110,7 +119,7 @@ pub fn rename_sound(id: String, name: String, app: AppHandle, ctx: State<'_, Ctx
     }
     mutate(&ctx, |a| {
         a.config.sound_mut(&id).ok_or("That sound no longer exists")?.name = name;
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     emit_state(&app, &ctx);
@@ -126,7 +135,9 @@ pub fn delete_sound(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(
             log::warn!("delete files failed: {e}");
         }
         a.engine.invalidate(&id);
-        a.save();
+        a.mark_dirty();
+        flush_now(a);
+        a.refresh_files();
         Ok(())
     })?;
     rebind_hotkeys(&app);
@@ -140,7 +151,8 @@ pub fn set_sound_image(id: String, path: String, app: AppHandle, ctx: State<'_, 
         let mut sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
         a.library.import_image(&mut sound, Path::new(&path)).map_err(|e| e.to_string())?;
         *a.config.sound_mut(&id).ok_or("That sound no longer exists")? = sound;
-        a.save();
+        a.mark_dirty();
+        a.refresh_files();
         Ok(())
     })?;
     emit_state(&app, &ctx);
@@ -153,7 +165,8 @@ pub fn clear_sound_image(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Res
         let mut sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
         a.library.remove_image(&mut sound).map_err(|e| e.to_string())?;
         *a.config.sound_mut(&id).ok_or("That sound no longer exists")? = sound;
-        a.save();
+        a.mark_dirty();
+        a.refresh_files();
         Ok(())
     })?;
     emit_state(&app, &ctx);
@@ -184,7 +197,7 @@ pub fn reorder_sounds(ids: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> 
             return Err("The sound list changed, try again".into());
         }
         a.config.sounds = reordered;
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     emit_state(&app, &ctx);
@@ -196,7 +209,7 @@ pub fn set_hotkey(id: String, accelerator: String, app: AppHandle, ctx: State<'_
     mutate(&ctx, |a| {
         let accel = hotkeys::validate_binding(&a.config, &accelerator, Owner::Sound(&id)).map_err(|e| e.to_string())?;
         a.config.sound_mut(&id).ok_or("That sound no longer exists")?.hotkey = Some(accel);
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     rebind_hotkeys(&app);
@@ -208,7 +221,7 @@ pub fn set_hotkey(id: String, accelerator: String, app: AppHandle, ctx: State<'_
 pub fn clear_hotkey(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
     mutate(&ctx, |a| {
         a.config.sound_mut(&id).ok_or("That sound no longer exists")?.hotkey = None;
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     rebind_hotkeys(&app);
@@ -221,7 +234,7 @@ pub fn set_stop_all_hotkey(accelerator: String, app: AppHandle, ctx: State<'_, C
     mutate(&ctx, |a| {
         let accel = hotkeys::validate_binding(&a.config, &accelerator, Owner::StopAll).map_err(|e| e.to_string())?;
         a.config.stop_all_hotkey = accel;
-        a.save();
+        a.mark_dirty();
         Ok(())
     })?;
     rebind_hotkeys(&app);
@@ -241,7 +254,7 @@ pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: A
         a.engine.set_outputs(outputs);
         a.available_devices = a.engine.refresh_devices();
         a.warned_devices.clear();
-        a.save();
+        a.mark_dirty();
     }
     emit_state(&app, &ctx);
 }
@@ -249,9 +262,11 @@ pub fn set_devices(speakers: Option<String>, virtual_mic: Option<String>, app: A
 /// Re-enumerates output devices (slow); the Settings panel calls this when opened.
 #[tauri::command]
 pub fn refresh_devices(app: AppHandle, ctx: State<'_, Ctx>) {
+    let addresses = lan_addresses();
     {
         let mut a = lock(&ctx.shared);
         a.available_devices = a.engine.refresh_devices();
+        a.addresses = addresses;
     }
     emit_state(&app, &ctx);
 }
@@ -273,7 +288,8 @@ pub fn set_remote_port(port: u16, app: AppHandle, ctx: State<'_, Ctx>) -> Result
     {
         let mut a = lock(&ctx.shared);
         a.config.remote.port = port;
-        a.save();
+        a.mark_dirty();
+        flush_now(&mut a);
     }
     remote_glue::start(&app);
     emit_state(&app, &ctx);
@@ -292,7 +308,8 @@ pub fn set_pin(pin: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Resu
         let mut a = lock(&ctx.shared);
         a.config.remote.pin_hash = hash;
         a.config.remote.token_secret = config::new_secret();
-        a.save();
+        a.mark_dirty();
+        flush_now(&mut a);
     }
     ctx.hub.kick_all();
     emit_state(&app, &ctx);

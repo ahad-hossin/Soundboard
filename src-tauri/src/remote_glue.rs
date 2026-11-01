@@ -6,7 +6,7 @@ use soundboard_core::remote::protocol::ServerMsg;
 use soundboard_core::remote::{self, RemoteHandler};
 use tauri::{AppHandle, Manager};
 
-use crate::state::{emit_state, emit_toast, lock, Ctx};
+use crate::state::{emit_state, emit_toast, lan_addresses, lock, Ctx};
 
 struct Handler {
     app: AppHandle,
@@ -43,7 +43,7 @@ impl RemoteHandler for Handler {
             let mut a = lock(&ctx.shared);
             a.engine.set_master(value);
             a.config.master_volume = value.clamp(0.0, 1.0);
-            a.save();
+            a.mark_dirty();
         }
         emit_state(&self.app, &ctx);
     }
@@ -67,9 +67,11 @@ impl RemoteHandler for Handler {
 pub fn start(app: &AppHandle) {
     let ctx = app.state::<Ctx>();
     let old = ctx.remote.lock().unwrap().take();
+    let addresses = lan_addresses();
     let port = {
         let mut a = lock(&ctx.shared);
         a.remote_port = None;
+        a.addresses = addresses;
         a.config.remote.port
     };
     let handler: Arc<dyn RemoteHandler> = Arc::new(Handler { app: app.clone() });

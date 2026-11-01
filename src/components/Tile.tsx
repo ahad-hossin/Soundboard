@@ -5,6 +5,7 @@ import type { MouseEvent } from "react";
 import { displayAccel } from "../lib/accel";
 import type { UiSound } from "../lib/api";
 import { cx } from "../lib/cx";
+import { useSliderDraft } from "../lib/useSliderDraft";
 
 interface Props {
   sound: UiSound;
@@ -18,6 +19,7 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sound.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const src = sound.image_path ? `${convertFileSrc(sound.image_path)}?v=${sound.image_rev}` : null;
+  const volume = useSliderDraft(sound.volume, onVolume);
 
   return (
     <div ref={setNodeRef} style={style} className={cx("group relative aspect-square", isDragging && "z-10 opacity-80")}>
@@ -59,9 +61,9 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         min={0}
         max={1}
         step={0.01}
-        value={sound.volume}
+        tabIndex={-1}
+        {...volume}
         aria-label={`${sound.name} volume`}
-        onChange={(e) => onVolume(Number(e.target.value))}
         onPointerDown={(e) => e.stopPropagation()}
         className="absolute inset-x-2 bottom-7 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
       />
