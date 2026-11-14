@@ -163,6 +163,10 @@ Output: `target/release/bundle/nsis/Soundboard_<version>_x64-setup.exe`.
 - `core/src/remote/page.html`: the phone page, a single file with no framework.
 
 Settings and copied files live in `%APPDATA%\com.yokitori.soundboard\`.
+Installing a new version over an old one keeps them. Every change is saved the
+moment you make it, and a sound file that is in the library folder but missing
+from the settings (for example after a crash) is put back on the board at the
+next start.
 
 ## License
 
