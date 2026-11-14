@@ -24,6 +24,9 @@ pub struct FakeBackend {
     finished: Mutex<HashSet<SinkHandle>>,
     gains: Mutex<HashMap<SinkHandle, f32>>,
     passthrough: AtomicBool,
+    /// Kept out of `calls` so call-order assertions stay about playback.
+    exclusive: Mutex<Option<DeviceTarget>>,
+    exclusive_fallback: Mutex<Option<String>>,
 }
 
 fn infos(names: &[&str]) -> Vec<DeviceInfo> {
@@ -45,7 +48,19 @@ impl FakeBackend {
             finished: Mutex::new(HashSet::new()),
             gains: Mutex::new(HashMap::new()),
             passthrough: AtomicBool::new(false),
+            exclusive: Mutex::new(None),
+            exclusive_fallback: Mutex::new(None),
         }
+    }
+
+    /// The target last passed to `set_exclusive_output`.
+    pub fn exclusive_output(&self) -> Option<DeviceTarget> {
+        self.exclusive.lock().unwrap().clone()
+    }
+
+    /// Simulates the exclusive output falling back to shared mode (or recovering with None).
+    pub fn set_exclusive_fallback(&self, reason: Option<String>) {
+        *self.exclusive_fallback.lock().unwrap() = reason;
     }
 
     pub fn calls(&self) -> Vec<Call> {
@@ -154,6 +169,14 @@ impl AudioBackend for FakeBackend {
 
     fn passthrough_active(&self) -> bool {
         self.passthrough.load(Ordering::SeqCst)
+    }
+
+    fn set_exclusive_output(&self, target: Option<DeviceTarget>) {
+        *self.exclusive.lock().unwrap() = target;
+    }
+
+    fn exclusive_fallback(&self) -> Option<String> {
+        self.exclusive_fallback.lock().unwrap().clone()
     }
 }
 

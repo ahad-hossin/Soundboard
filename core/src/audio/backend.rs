@@ -83,4 +83,12 @@ pub trait AudioBackend: Send + Sync {
     fn set_passthrough_gain(&self, gain: f32);
     /// True while a started passthrough is still running (not stopped, reset or dropped with its output stream).
     fn passthrough_active(&self) -> bool;
+    /// Open `target` in exclusive mode from now on (None: no such output). Recorders and stream
+    /// tools capture every shared-mode stream a process plays, on every device, so the virtual
+    /// mic (which carries the user's voice) must stay out of shared mode or the voice shows up
+    /// twice in Discord screen shares and in per-app clip recordings.
+    fn set_exclusive_output(&self, target: Option<DeviceTarget>);
+    /// Why the exclusive output had to open in shared mode instead, or None while it is
+    /// exclusive or not open. Cheap: no round trip to the audio thread.
+    fn exclusive_fallback(&self) -> Option<String>;
 }

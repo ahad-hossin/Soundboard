@@ -2,6 +2,8 @@ pub mod backend;
 pub mod cache;
 pub mod decode;
 pub mod engine;
+#[cfg(windows)]
+mod exclusive;
 pub mod fake_backend;
 pub mod trim;
 

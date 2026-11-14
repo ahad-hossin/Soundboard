@@ -52,6 +52,12 @@ impl Outputs {
         }
         out
     }
+
+    /// The virtual mic, which carries the user's voice and must play exclusively (see
+    /// `AudioBackend::set_exclusive_output`).
+    pub fn exclusive_target(&self) -> Option<DeviceTarget> {
+        self.virtual_mic.as_ref().map(|n| DeviceTarget::Named(n.clone()))
+    }
 }
 
 
@@ -98,6 +104,7 @@ impl<B: AudioBackend> Engine<B> {
     pub fn new(backend: B, mut outputs: Outputs, master: f32, cache_bytes: usize) -> Self {
         let default_device = default_name(&backend.devices());
         outputs.mic_gain = clamp_mic_gain(outputs.mic_gain);
+        backend.set_exclusive_output(outputs.exclusive_target());
         Self {
             backend,
             cache: BufferCache::new(cache_bytes),
@@ -197,6 +204,12 @@ impl<B: AudioBackend> Engine<B> {
         self.passthrough_error.clone()
     }
 
+    /// Why the virtual mic is playing in shared mode, where Discord screen shares and per-app
+    /// recorders (Medal, OBS) also hear it; None while it is exclusive or not open.
+    pub fn virtual_mic_warning(&self) -> Option<String> {
+        self.backend.exclusive_fallback()
+    }
+
     pub fn set_mic_gain(&mut self, g: f32) {
         let g = clamp_mic_gain(g);
         self.outputs.mic_gain = g;
@@ -214,6 +227,7 @@ impl<B: AudioBackend> Engine<B> {
         self.backend.reset();
         self.passthrough_key = None;
         outputs.mic_gain = clamp_mic_gain(outputs.mic_gain);
+        self.backend.set_exclusive_output(outputs.exclusive_target());
         self.outputs = outputs;
         self.default_device = default_name(&self.backend.devices());
         let _ = self.apply_passthrough();
@@ -671,6 +685,31 @@ mod tests {
     fn play_file_missing_is_io_error() {
         let mut e = engine(both(), 1.0);
         assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/nope.wav"), None), Err(AudioError::Io(_))));
+    }
+
+    #[test]
+    fn new_plays_the_virtual_mic_exclusively() {
+        let e = engine(both(), 1.0);
+        assert_eq!(e.backend().exclusive_output(), Some(DeviceTarget::Named("CABLE Input".into())));
+        let e = engine(Outputs { speakers: Some("Speakers".into()), ..Outputs::default() }, 1.0);
+        assert_eq!(e.backend().exclusive_output(), None);
+    }
+
+    #[test]
+    fn set_outputs_moves_the_exclusive_output_with_the_virtual_mic() {
+        let mut e = engine(both(), 1.0);
+        e.set_outputs(Outputs { speakers: Some("Speakers".into()), ..Outputs::default() });
+        assert_eq!(e.backend().exclusive_output(), None);
+        e.set_outputs(Outputs { speakers: Some("CABLE Input".into()), virtual_mic: Some("Speakers".into()), ..Outputs::default() });
+        assert_eq!(e.backend().exclusive_output(), Some(DeviceTarget::Named("Speakers".into())));
+    }
+
+    #[test]
+    fn virtual_mic_warning_reports_the_shared_mode_fallback() {
+        let e = engine(both(), 1.0);
+        assert_eq!(e.virtual_mic_warning(), None);
+        e.backend().set_exclusive_fallback(Some("the device is in use by another app".into()));
+        assert_eq!(e.virtual_mic_warning().as_deref(), Some("the device is in use by another app"));
     }
 
     #[test]

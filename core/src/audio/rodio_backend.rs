@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,8 @@ use rodio::cpal::{FromSample, SampleFormat, SizedSample};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+#[cfg(windows)]
+use super::exclusive::ExclusiveOutput;
 
 /// How long a cached stream for a named device is trusted before the device list is checked again.
 const REVALIDATE_AFTER: Duration = Duration::from_secs(2);
@@ -201,6 +203,34 @@ impl Drop for Passthrough {
     }
 }
 
+/// One open device. Every sink on it mixes into a single device stream.
+enum DeviceStream {
+    Shared { _stream: OutputStream, handle: OutputStreamHandle },
+    /// The virtual mic, out of reach of per-app capture (see `exclusive`).
+    #[cfg(windows)]
+    Exclusive(ExclusiveOutput),
+}
+
+impl DeviceStream {
+    fn new_sink(&self) -> Result<Sink, AudioError> {
+        match self {
+            Self::Shared { handle, .. } => Sink::try_new(handle).map_err(|e| AudioError::Stream(e.to_string())),
+            #[cfg(windows)]
+            Self::Exclusive(out) => Ok(out.new_sink()),
+        }
+    }
+
+    /// False once an exclusive stream stopped on its own; a dead shared stream is only noticed
+    /// by revalidating the device list.
+    fn is_alive(&self) -> bool {
+        match self {
+            Self::Shared { .. } => true,
+            #[cfg(windows)]
+            Self::Exclusive(out) => out.is_alive(),
+        }
+    }
+}
+
 enum Cmd {
     Devices(Sender<Vec<DeviceInfo>>),
     InputDevices(Sender<Vec<DeviceInfo>>),
@@ -208,6 +238,7 @@ enum Cmd {
     StopPassthrough,
     SetPassthroughGain(f32),
     PassthroughActive(Sender<bool>),
+    SetExclusiveOutput(Option<DeviceTarget>),
     Play { target: DeviceTarget, buffer: DecodedBuffer, gain: f32, reply: Sender<Result<SinkHandle, AudioError>> },
     Stop(SinkHandle),
     SetGain(SinkHandle, f32),
@@ -218,16 +249,20 @@ enum Cmd {
 /// Real backend. All cpal/rodio objects live on the `audio` thread.
 pub struct RodioBackend {
     tx: Sender<Cmd>,
+    /// Written by the audio thread, read without a round trip (see `exclusive_fallback`).
+    exclusive_fallback: Arc<Mutex<Option<String>>>,
 }
 
 impl RodioBackend {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel::<Cmd>();
+        let exclusive_fallback = Arc::new(Mutex::new(None));
+        let fallback = Arc::clone(&exclusive_fallback);
         thread::Builder::new()
             .name("audio".into())
-            .spawn(move || audio_thread(rx))
+            .spawn(move || audio_thread(rx, fallback))
             .expect("spawn audio thread");
-        Self { tx }
+        Self { tx, exclusive_fallback }
     }
 
     fn gone() -> AudioError {
@@ -309,19 +344,31 @@ impl AudioBackend for RodioBackend {
         }
         rx.recv().unwrap_or(false)
     }
+
+    fn set_exclusive_output(&self, target: Option<DeviceTarget>) {
+        let _ = self.tx.send(Cmd::SetExclusiveOutput(target));
+    }
+
+    fn exclusive_fallback(&self) -> Option<String> {
+        self.exclusive_fallback.lock().map(|f| f.clone()).unwrap_or(None)
+    }
 }
 
 struct AudioThread {
     host: rodio::cpal::Host,
-    streams: HashMap<DeviceTarget, (OutputStream, OutputStreamHandle)>,
+    streams: HashMap<DeviceTarget, DeviceStream>,
     sinks: HashMap<SinkHandle, Sink>,
     sink_targets: HashMap<SinkHandle, DeviceTarget>,
     last_validated: HashMap<DeviceTarget, Instant>,
     passthrough: Option<Passthrough>,
+    /// Opened exclusively when possible; the virtual mic.
+    exclusive_target: Option<DeviceTarget>,
+    /// Why `exclusive_target` is open in shared mode; None while exclusive or closed.
+    exclusive_fallback: Arc<Mutex<Option<String>>>,
     next: u64,
 }
 
-fn audio_thread(rx: Receiver<Cmd>) {
+fn audio_thread(rx: Receiver<Cmd>, exclusive_fallback: Arc<Mutex<Option<String>>>) {
     let mut st = AudioThread {
         host: rodio::cpal::default_host(),
         streams: HashMap::new(),
@@ -329,6 +376,8 @@ fn audio_thread(rx: Receiver<Cmd>) {
         sink_targets: HashMap::new(),
         last_validated: HashMap::new(),
         passthrough: None,
+        exclusive_target: None,
+        exclusive_fallback,
         next: 1,
     };
     while let Ok(cmd) = rx.recv() {
@@ -351,7 +400,19 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 }
             }
             Cmd::PassthroughActive(reply) => {
+                if let Some(output) = st.passthrough.as_ref().map(|p| p.output.clone()) {
+                    st.drop_if_dead(&output);
+                }
                 let _ = reply.send(st.passthrough.is_some());
+            }
+            Cmd::SetExclusiveOutput(target) => {
+                if st.exclusive_target != target {
+                    // Whichever device changed mode reopens in its new mode on next use.
+                    for t in [st.exclusive_target.take(), target.clone()].into_iter().flatten() {
+                        st.drop_stream(&t);
+                    }
+                    st.exclusive_target = target;
+                }
             }
             Cmd::Play { target, buffer, gain, reply } => {
                 let _ = reply.send(st.play(&target, &buffer, gain));
@@ -367,6 +428,10 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 }
             }
             Cmd::IsFinished(h, reply) => {
+                // Sinks on a dead exclusive stream never drain; dropping the stream ends them.
+                if let Some(target) = st.sink_targets.get(&h).cloned() {
+                    st.drop_if_dead(&target);
+                }
                 let done = st.sinks.get(&h).map(|s| s.empty()).unwrap_or(true);
                 if done {
                     st.remove_sink(h);
@@ -379,6 +444,7 @@ fn audio_thread(rx: Receiver<Cmd>) {
                 st.sink_targets.clear();
                 st.streams.clear();
                 st.last_validated.clear();
+                st.set_fallback(None);
             }
         }
     }
@@ -445,17 +511,7 @@ impl AudioThread {
             _ => return Err(AudioError::Stream("unsupported mic sample format".into())),
         };
         stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
-        let sink = match self.handle_for(output).and_then(|h| Sink::try_new(&h).map_err(|e| AudioError::Stream(e.to_string()))) {
-            Ok(s) => s,
-            Err(e) => {
-                // Same recovery as `play`: reopen next time, and say so plainly if the device is gone.
-                self.drop_stream(output);
-                return match self.find_device(output) {
-                    Err(not_found @ AudioError::DeviceNotFound(_)) => Err(not_found),
-                    _ => Err(e),
-                };
-            }
-        };
+        let sink = self.sink_for(output)?;
         sink.set_volume(gain);
         sink.append(MicSource::new(cons, channels, sample_rate));
         self.passthrough = Some(Passthrough { sink, _input: stream, output: output.clone() });
@@ -488,6 +544,9 @@ impl AudioThread {
         if self.passthrough.as_ref().is_some_and(|p| &p.output == target) {
             self.passthrough = None;
         }
+        if self.exclusive_target.as_ref() == Some(target) {
+            self.set_fallback(None);
+        }
         self.streams.remove(target);
         self.last_validated.remove(target);
         let dead: Vec<SinkHandle> =
@@ -497,7 +556,37 @@ impl AudioThread {
         }
     }
 
-    fn handle_for(&mut self, target: &DeviceTarget) -> Result<OutputStreamHandle, AudioError> {
+    fn set_fallback(&self, reason: Option<String>) {
+        if let Ok(mut f) = self.exclusive_fallback.lock() {
+            *f = reason;
+        }
+    }
+
+    /// Drops the stream for `target` (and its sinks) if it stopped on its own.
+    fn drop_if_dead(&mut self, target: &DeviceTarget) {
+        if self.streams.get(target).is_some_and(|s| !s.is_alive()) {
+            self.drop_stream(target);
+        }
+    }
+
+    /// A new sink on `target`, opening the device stream on first use. On failure the stream is
+    /// dropped so the next attempt reopens, and a device that is really gone is reported as
+    /// `DeviceNotFound` so the engine can fall back.
+    fn sink_for(&mut self, target: &DeviceTarget) -> Result<Sink, AudioError> {
+        match self.stream_for(target).and_then(DeviceStream::new_sink) {
+            Ok(sink) => Ok(sink),
+            Err(e) => {
+                self.drop_stream(target);
+                match self.find_device(target) {
+                    Err(not_found @ AudioError::DeviceNotFound(_)) => Err(not_found),
+                    _ => Err(e),
+                }
+            }
+        }
+    }
+
+    fn stream_for(&mut self, target: &DeviceTarget) -> Result<&DeviceStream, AudioError> {
+        self.drop_if_dead(target);
         if self.streams.contains_key(target) {
             // cpal never tells us a stream died, so named devices are re-checked now and then.
             if matches!(target, DeviceTarget::Named(_))
@@ -515,28 +604,41 @@ impl AudioThread {
                 }
             }
         } else {
-            let device = self.find_device(target)?;
-            let (stream, handle) =
-                OutputStream::try_from_device(&device).map_err(|e| AudioError::Stream(e.to_string()))?;
-            self.streams.insert(target.clone(), (stream, handle));
+            let stream = self.open_stream(target)?;
+            self.streams.insert(target.clone(), stream);
             self.last_validated.insert(target.clone(), Instant::now());
         }
-        Ok(self.streams[target].1.clone())
+        Ok(&self.streams[target])
+    }
+
+    /// The exclusive target opens exclusively when Windows allows it, otherwise shared with the
+    /// reason kept for `exclusive_fallback`. Everything else opens shared.
+    fn open_stream(&mut self, target: &DeviceTarget) -> Result<DeviceStream, AudioError> {
+        #[cfg(windows)]
+        if let Some(DeviceTarget::Named(name)) = self.exclusive_target.as_ref().filter(|t| *t == target) {
+            match ExclusiveOutput::open(name) {
+                Ok(out) => {
+                    self.set_fallback(None);
+                    return Ok(DeviceStream::Exclusive(out));
+                }
+                Err(not_found @ AudioError::DeviceNotFound(_)) => return Err(not_found),
+                Err(e) => {
+                    let reason = match e {
+                        AudioError::Stream(reason) => reason,
+                        other => other.to_string(),
+                    };
+                    log::warn!("virtual mic falls back to shared mode: {reason}");
+                    self.set_fallback(Some(reason));
+                }
+            }
+        }
+        let device = self.find_device(target)?;
+        let (stream, handle) = OutputStream::try_from_device(&device).map_err(|e| AudioError::Stream(e.to_string()))?;
+        Ok(DeviceStream::Shared { _stream: stream, handle })
     }
 
     fn play(&mut self, target: &DeviceTarget, buffer: &DecodedBuffer, gain: f32) -> Result<SinkHandle, AudioError> {
-        let sink = match self.handle_for(target).and_then(|h| Sink::try_new(&h).map_err(|e| AudioError::Stream(e.to_string()))) {
-            Ok(s) => s,
-            Err(e) => {
-                // The stream may have died (device unplugged). Drop it so the next attempt reopens,
-                // and report DeviceNotFound if the device is really gone so the engine can fall back.
-                self.drop_stream(target);
-                return match self.find_device(target) {
-                    Err(not_found @ AudioError::DeviceNotFound(_)) => Err(not_found),
-                    _ => Err(e),
-                };
-            }
-        };
+        let sink = self.sink_for(target)?;
         sink.set_volume(gain);
         sink.append(SharedSource::new(buffer));
         let h = SinkHandle(self.next);
@@ -728,6 +830,27 @@ mod tests {
         assert!(!b.passthrough_active());
         // The audio thread is still responsive after stopping.
         let _ = b.devices();
+    }
+
+    /// Needs VB-Cable. A quiet clip on the exclusive virtual mic opens it exclusively, drains,
+    /// and reports finished like a shared one. Run with:
+    /// cargo test -p soundboard-core exclusive_target_plays -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn exclusive_target_plays_and_finishes() {
+        let cable = DeviceTarget::Named("CABLE Input (VB-Audio Virtual Cable)".into());
+        let b = RodioBackend::new();
+        b.set_exclusive_output(Some(cable.clone()));
+        let tone = crate::audio::engine::sine(440.0, 0.3, 44100);
+        let h = b.play(&cable, &tone, 0.003).unwrap();
+        assert_eq!(b.exclusive_fallback(), None, "opened exclusively");
+        assert!(!b.is_finished(h));
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(b.is_finished(h), "the exclusive mixer drained the clip");
+        b.set_exclusive_output(None);
+        let h = b.play(&cable, &tone, 0.003).unwrap();
+        assert_eq!(b.exclusive_fallback(), None);
+        b.stop(h);
     }
 
     #[test]
