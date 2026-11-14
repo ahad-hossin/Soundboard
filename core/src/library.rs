@@ -157,6 +157,46 @@ impl Library {
         Ok(())
     }
 
+    /// Appends a sound for every audio file in `sounds/` that no entry in `sounds` refers to,
+    /// oldest file first, and returns how many were added. Such files are left behind when a
+    /// sound was imported but the app stopped before the config was written; without this they
+    /// would vanish from the board on the next start. Names match case-insensitively, as on
+    /// Windows.
+    pub fn adopt_orphans(&self, sounds: &mut Vec<Sound>) -> io::Result<usize> {
+        let listed: Vec<String> = sounds.iter().map(|s| s.file.to_lowercase()).collect();
+        let mut orphans = Vec::new();
+        for entry in fs::read_dir(self.sounds_dir())? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+            if !meta.is_file() || !is_safe_name(&name) || !has_supported_extension(Path::new(&name)) {
+                continue;
+            }
+            if listed.contains(&name.to_lowercase()) {
+                continue;
+            }
+            let added_at = meta.created().or_else(|_| meta.modified()).ok();
+            orphans.push((added_at, name));
+        }
+        orphans.sort();
+        let mut colors: Vec<String> = sounds.iter().filter_map(|s| s.color.clone()).collect();
+        for (_, file) in &orphans {
+            let color = next_color(&colors.iter().map(String::as_str).collect::<Vec<_>>()).to_string();
+            colors.push(color.clone());
+            sounds.push(Sound {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: Path::new(file).file_stem().and_then(|s| s.to_str()).unwrap_or("Sound").to_string(),
+                file: file.clone(),
+                image: None,
+                volume: 1.0,
+                hotkey: None,
+                color: Some(color),
+                trim: None,
+            });
+        }
+        Ok(orphans.len())
+    }
+
     pub fn delete_sound(&self, sound: &Sound) -> io::Result<()> {
         remove_if_exists(&self.sound_path(sound))?;
         if let Some(p) = self.image_path(sound) {
@@ -200,6 +240,42 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         (dir, lib, src)
+    }
+
+    fn sound_named(file: &str) -> Sound {
+        Sound {
+            id: format!("id-{file}"),
+            name: file.to_string(),
+            file: file.to_string(),
+            image: None,
+            volume: 1.0,
+            hotkey: None,
+            color: Some(crate::palette::PALETTE[0].to_string()),
+            trim: None,
+        }
+    }
+
+    #[test]
+    fn adopt_orphans_adds_audio_files_the_config_does_not_list() {
+        let (_d, lib, _) = setup();
+        for name in ["kept.mp3", "lost one.wav", "notes.txt"] {
+            std::fs::write(lib.sounds_dir().join(name), b"x").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(lib.sounds_dir().join("Lost Two.MP3"), b"x").unwrap();
+        std::fs::create_dir(lib.sounds_dir().join("folder.mp3")).unwrap();
+        let mut sounds = vec![sound_named("KEPT.mp3")];
+
+        let added = lib.adopt_orphans(&mut sounds).unwrap();
+
+        assert_eq!(added, 2, "only unlisted audio files; case-insensitive match, no text file or folder");
+        let names: Vec<&str> = sounds.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["KEPT.mp3", "lost one", "Lost Two"], "appended oldest file first");
+        assert_eq!(sounds[1].file, "lost one.wav");
+        assert_ne!(sounds[1].id, sounds[2].id);
+        assert_ne!(sounds[1].color, sounds[0].color, "least-used colors, like an import");
+        assert_eq!((sounds[2].volume, sounds[2].image.clone(), sounds[2].trim), (1.0, None, None));
+        assert_eq!(lib.adopt_orphans(&mut sounds).unwrap(), 0, "a second pass finds nothing");
     }
 
     #[test]
