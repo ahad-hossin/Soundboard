@@ -30,6 +30,8 @@ pub struct App {
     pub available_inputs: Vec<DeviceInfo>,
     /// Last mic passthrough failure shown as a toast, so the same failure is reported once.
     pub last_passthrough_error: Option<String>,
+    /// Last reason the virtual mic fell back to shared mode that was shown as a toast.
+    pub last_virtual_mic_warning: Option<String>,
     /// Shown once as toasts when the UI first loads.
     pub startup_notices: Vec<String>,
     /// Config has changes not yet written; the reaper flushes it every tick.
@@ -148,6 +150,7 @@ impl App {
             available_devices,
             available_inputs,
             last_passthrough_error: None,
+            last_virtual_mic_warning: None,
             startup_notices: Vec::new(),
             dirty: false,
             save_failed_reported: false,
@@ -185,6 +188,16 @@ impl App {
                 Some(message)
             }
         }
+    }
+
+    /// Toast text when the virtual mic had to open in shared mode, where Discord screen share and
+    /// per-app recorders (Medal) also hear the voice it carries. Once per distinct reason; opening
+    /// exclusively again re-arms it. Cheap: no round trip to the audio thread.
+    pub fn virtual_mic_toast(&mut self) -> Option<String> {
+        let reason = report_once(&mut self.last_virtual_mic_warning, self.engine.virtual_mic_warning())?;
+        Some(format!(
+            "Virtual mic could not open in exclusive mode ({reason}), so Discord screen share and recorders like Medal can hear your voice twice."
+        ))
     }
 
     /// Sets one sound's volume in the config and on any live voices. False if the id is unknown.
@@ -410,4 +423,29 @@ pub fn emit_state(app: &AppHandle, ctx: &Ctx) {
 
 pub fn emit_toast(app: &AppHandle, level: &str, message: impl Into<String>) {
     let _ = app.emit("toast", Toast { level: level.into(), message: message.into() });
+}
+
+/// `current` when it differs from what `last` already reported, else None; remembers `current`.
+fn report_once(last: &mut Option<String>, current: Option<String>) -> Option<String> {
+    if *last == current {
+        return None;
+    }
+    last.clone_from(&current);
+    current
+}
+
+#[cfg(test)]
+mod tests {
+    use super::report_once;
+
+    #[test]
+    fn report_once_repeats_only_after_a_change() {
+        let mut last = None;
+        assert_eq!(report_once(&mut last, None), None);
+        assert_eq!(report_once(&mut last, Some("busy".into())).as_deref(), Some("busy"));
+        assert_eq!(report_once(&mut last, Some("busy".into())), None, "same reason stays quiet");
+        assert_eq!(report_once(&mut last, Some("not allowed".into())).as_deref(), Some("not allowed"));
+        assert_eq!(report_once(&mut last, None), None, "recovery is silent");
+        assert_eq!(report_once(&mut last, Some("busy".into())).as_deref(), Some("busy"), "re-armed");
+    }
 }

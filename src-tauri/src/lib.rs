@@ -79,6 +79,7 @@ pub fn run() {
             let available_inputs = engine.input_devices();
             let mut app_state = App::new(cfg, engine, library, available_devices, available_inputs);
             notices.extend(app_state.passthrough_toast());
+            notices.extend(app_state.virtual_mic_toast());
             app_state.startup_notices = notices;
             let shared: Shared = Arc::new(Mutex::new(app_state));
             app.manage(Ctx { shared: shared.clone(), hub: Hub::new(), remote: Mutex::new(None),
@@ -221,13 +222,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 /// Every 100 ms drop finished sinks, write pending config changes, restart a mic passthrough
 /// that stopped on its own, and push state when the playing set changed. A save failure is
-/// toasted once until a save succeeds; a failed passthrough restart once per distinct error.
+/// toasted once until a save succeeds; a failed passthrough restart once per distinct error,
+/// and likewise a virtual mic that had to open in shared mode.
 fn spawn_reaper(app: AppHandle) {
     std::thread::Builder::new()
         .name("reaper".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(100));
-            let (changed, save_error, passthrough_error) = {
+            let (changed, save_error, passthrough_error, virtual_mic_warning) = {
                 let ctx = app.state::<Ctx>();
                 let mut a = lock(&ctx.shared);
                 let changed = a.engine.reap();
@@ -248,13 +250,18 @@ fn spawn_reaper(app: AppHandle) {
                 } else {
                     None
                 };
-                (changed, save_error, passthrough_error)
+                // The virtual mic opens lazily (first play, passthrough start), so check every tick.
+                let virtual_mic_warning = a.virtual_mic_toast();
+                (changed, save_error, passthrough_error, virtual_mic_warning)
             };
             if let Some(e) = save_error {
                 emit_toast(&app, "error", format!("Could not save settings: {e}"));
             }
             if let Some(t) = passthrough_error {
                 emit_toast(&app, "error", t);
+            }
+            if let Some(t) = virtual_mic_warning {
+                emit_toast(&app, "warn", t);
             }
             if changed {
                 let ctx = app.state::<Ctx>();
