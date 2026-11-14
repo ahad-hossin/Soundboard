@@ -255,6 +255,27 @@ images/
   safe) and opened lazily per device, kept for the app lifetime, and dropped
   when devices change in Settings.
 
+### Virtual mic in exclusive mode
+
+- Medal's per-app audio tracks, Discord screen share and OBS application
+  capture record through Windows process loopback, which picks up every
+  shared-mode stream a process plays, on every device. A shared stream to the
+  virtual mic would put the user's voice (mic passthrough) into the
+  soundboard's own captured audio, so streams and clips would carry the voice
+  twice.
+- The virtual mic therefore opens in WASAPI exclusive mode (stereo, the
+  device's own rate first, event driven at the device period, render thread
+  registered as MMCSS "Pro Audio"), fed by a rodio mixer. Exclusive streams
+  bypass the Windows mixer, so process loopback never sees them, while the
+  cable still delivers them to Discord. The speakers stay shared, so the sounds
+  still appear once in streams and clips.
+- If Windows refuses exclusive mode (another app uses the device, exclusive
+  control is turned off, no accepted format), the virtual mic opens shared as
+  before and a warning toast names the reason, once per distinct reason. The
+  next device change tries exclusive again.
+- A dead exclusive stream (device gone) ends its sinks and the passthrough;
+  the reaper restarts the passthrough as for any lost stream.
+
 ### Decoded buffer cache
 
 - LRU keyed by sound id, evicting when total bytes exceed 200 MB.

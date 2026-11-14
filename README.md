@@ -31,6 +31,8 @@ Download the latest installer from the
 - Pick your real microphone in Settings and the app mixes your voice into the
   virtual mic together with the sounds. Discord only needs one input device.
 - Mic gain control. Passthrough restarts itself if a device drops out.
+- Your voice is not picked up a second time by Discord screen share or by clip
+  recorders like Medal (the virtual mic plays in exclusive mode).
 
 **Hotkeys**
 - A global hotkey per sound and one for Stop All. They work while a game or any
@@ -106,6 +108,19 @@ For building from source:
 
 Your voice and the sounds now reach the call together. Your voice never plays
 on your own speakers.
+
+The app holds `CABLE Input` in exclusive mode, so screen-share and clip tools
+that record per app (Discord screen share, Medal, OBS application capture)
+only hear the sounds on your speakers, not your voice a second time. Other
+apps cannot play into `CABLE Input` while Soundboard runs. If it cannot get
+exclusive mode, it shows a warning with the reason; the usual fixes are closing
+whatever else plays to `CABLE Input`, or in Windows Sound settings, CABLE
+Input, Properties, Advanced, ticking "Allow applications to take exclusive
+control of this device".
+
+Recorders such as Medal: keep the microphone track on your real microphone and
+keep Soundboard in the list of recorded apps. The Soundboard track then holds
+the sounds and the microphone track holds your voice, once each.
 
 ## Develop
 
