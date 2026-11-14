@@ -55,7 +55,7 @@ pub fn run() {
             let library = Library::open(&data_dir)?;
             let outcome = config::load(&library.config_path());
             let mut notices = Vec::new();
-            let cfg = match outcome {
+            let mut cfg = match outcome {
                 LoadOutcome::Loaded(c) => c,
                 LoadOutcome::Fresh(c) => {
                     config::save(&library.config_path(), &c)?;
@@ -66,6 +66,16 @@ pub fn run() {
                     config
                 }
             };
+            // Sounds imported in a session that ended before its config was written are still
+            // in `sounds/`; put them back on the board instead of letting them vanish.
+            let recovered = library.adopt_orphans(&mut cfg.sounds).unwrap_or_else(|e| {
+                log::warn!("looking for unsaved sounds failed: {e}");
+                0
+            });
+            if recovered > 0 {
+                let (s, were) = if recovered == 1 { ("", "was") } else { ("s", "were") };
+                notices.push(format!("Recovered {recovered} sound{s} that {were} added but not saved last time."));
+            }
             let outputs = soundboard_core::audio::Outputs {
                 speakers: cfg.devices.speakers.clone(),
                 virtual_mic: cfg.devices.virtual_mic.clone(),
@@ -78,6 +88,9 @@ pub fn run() {
             let available_devices = engine.devices();
             let available_inputs = engine.input_devices();
             let mut app_state = App::new(cfg, engine, library, available_devices, available_inputs);
+            if recovered > 0 {
+                app_state.mark_dirty();
+            }
             notices.extend(app_state.passthrough_toast());
             notices.extend(app_state.virtual_mic_toast());
             app_state.startup_notices = notices;
@@ -220,53 +233,61 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Every 100 ms drop finished sinks, write pending config changes, restart a mic passthrough
-/// that stopped on its own, and push state when the playing set changed. A save failure is
-/// toasted once until a save succeeds; a failed passthrough restart once per distinct error,
-/// and likewise a virtual mic that had to open in shared mode.
+/// Every 100 ms runs `reaper_tick`. A panic in one tick is logged and the loop goes on: a dead
+/// reaper would silently stop retrying saves, reaping finished sounds and restarting the mic.
 fn spawn_reaper(app: AppHandle) {
     std::thread::Builder::new()
         .name("reaper".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_millis(100));
-            let (changed, save_error, passthrough_error, virtual_mic_warning) = {
-                let ctx = app.state::<Ctx>();
-                let mut a = lock(&ctx.shared);
-                let changed = a.engine.reap();
-                let save_error = match a.flush() {
-                    Ok(()) => None,
-                    Err(e) if !a.save_failed_reported => {
-                        log::error!("config save failed: {e}");
-                        a.save_failed_reported = true;
-                        Some(e)
-                    }
-                    Err(_) => None,
-                };
-                // The restart is a round trip to the audio thread; it only happens after a loss.
-                let passthrough_error = if a.engine.passthrough_lost() {
-                    log::warn!("microphone passthrough stopped, restarting");
-                    let _ = a.engine.ensure_passthrough();
-                    a.passthrough_toast_with("Microphone passthrough stopped, restarting failed")
-                } else {
-                    None
-                };
-                // The virtual mic opens lazily (first play, passthrough start), so check every tick.
-                let virtual_mic_warning = a.virtual_mic_toast();
-                (changed, save_error, passthrough_error, virtual_mic_warning)
-            };
-            if let Some(e) = save_error {
-                emit_toast(&app, "error", format!("Could not save settings: {e}"));
-            }
-            if let Some(t) = passthrough_error {
-                emit_toast(&app, "error", t);
-            }
-            if let Some(t) = virtual_mic_warning {
-                emit_toast(&app, "warn", t);
-            }
-            if changed {
-                let ctx = app.state::<Ctx>();
-                emit_state(&app, &ctx);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reaper_tick(&app))).is_err() {
+                log::error!("reaper tick panicked; continuing");
             }
         })
         .expect("spawn reaper");
+}
+
+/// Drop finished sinks, retry a pending config write, restart a mic passthrough that stopped
+/// on its own, and push state when the playing set changed. A save failure is toasted once
+/// until a save succeeds; a failed passthrough restart once per distinct error, and likewise
+/// a virtual mic that had to open in shared mode.
+fn reaper_tick(app: &AppHandle) {
+    let (changed, save_error, passthrough_error, virtual_mic_warning) = {
+        let ctx = app.state::<Ctx>();
+        let mut a = lock(&ctx.shared);
+        let changed = a.engine.reap();
+        let save_error = match a.flush() {
+            Ok(()) => None,
+            Err(e) if !a.save_failed_reported => {
+                log::error!("config save failed: {e}");
+                a.save_failed_reported = true;
+                Some(e)
+            }
+            Err(_) => None,
+        };
+        // The restart is a round trip to the audio thread; it only happens after a loss.
+        let passthrough_error = if a.engine.passthrough_lost() {
+            log::warn!("microphone passthrough stopped, restarting");
+            let _ = a.engine.ensure_passthrough();
+            a.passthrough_toast_with("Microphone passthrough stopped, restarting failed")
+        } else {
+            None
+        };
+        // The virtual mic opens lazily (first play, passthrough start), so check every tick.
+        let virtual_mic_warning = a.virtual_mic_toast();
+        (changed, save_error, passthrough_error, virtual_mic_warning)
+    };
+    if let Some(e) = save_error {
+        emit_toast(app, "error", format!("Could not save settings: {e}"));
+    }
+    if let Some(t) = passthrough_error {
+        emit_toast(app, "error", t);
+    }
+    if let Some(t) = virtual_mic_warning {
+        emit_toast(app, "warn", t);
+    }
+    if changed {
+        let ctx = app.state::<Ctx>();
+        emit_state(app, &ctx);
+    }
 }

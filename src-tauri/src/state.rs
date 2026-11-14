@@ -213,8 +213,14 @@ impl App {
     }
 
     /// Records that config changed; the reaper writes it within one tick.
+    /// Records a config change and writes it right away, so it survives the app being killed
+    /// (shutdown, crash) and never depends on the reaper still running. A failed write stays
+    /// dirty: the reaper retries it and reports the error once.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        if let Err(e) = self.flush() {
+            log::error!("config save failed: {e}");
+        }
     }
 
     /// Writes config if it changed. On error the flag stays set so the next tick retries.
