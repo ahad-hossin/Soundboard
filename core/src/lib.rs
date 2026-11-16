@@ -14,3 +14,5 @@ pub mod hotkeys;
 pub mod test_util;
 
 pub mod remote;
+
+pub mod link;
