@@ -14,7 +14,7 @@ vi.mock("../lib/api", () => ({
 
 const mocked = api as unknown as Record<keyof typeof api, ReturnType<typeof vi.fn>>;
 
-const sound: UiSound = { id: "s1", name: "Airhorn", volume: 1, hotkey: null, color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 4, play_seq: 0, trim: null };
+const sound: UiSound = { id: "s1", name: "Airhorn", volume: 1, hotkey: null, color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 4, play_seq: 0, trim: null, folder: null };
 
 function wave(over: Partial<Waveform> = {}): Waveform {
   return { duration_secs: 4, peaks: Array.from({ length: 600 }, (_, i) => (i % 10) / 10), trim: null, ...over };

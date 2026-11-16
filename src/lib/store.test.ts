@@ -16,6 +16,13 @@ describe("store", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it("opening or leaving a folder clears the selection", () => {
+    useStore.setState({ openFolder: null, sel: new Set(["a"]) });
+    useStore.getState().setOpenFolder("f1");
+    expect(useStore.getState().openFolder).toBe("f1");
+    expect(useStore.getState().sel.size).toBe(0);
+  });
+
   it("keeps at most three toasts and auto-dismisses after 4s", () => {
     const { toast } = useStore.getState();
     toast("info", "a");

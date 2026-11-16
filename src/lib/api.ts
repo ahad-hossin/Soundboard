@@ -12,6 +12,7 @@ export interface Waveform {
   trim: Trim | null;
 }
 export interface AddOutcome { rejected: string[]; added_ids: string[] }
+export interface UiFolder { id: string; name: string }
 export interface UiSound {
   id: string;
   name: string;
@@ -26,6 +27,8 @@ export interface UiSound {
   /** Bumped on every successful play; restarts the progress sweep. */
   play_seq: number;
   trim: Trim | null;
+  /** Folder id, or null for the top level. */
+  folder: string | null;
 }
 export interface UiDevices {
   speakers: string | null;
@@ -44,6 +47,7 @@ export interface UiState {
   startup: UiStartup;
   remote: UiRemote;
   sounds: UiSound[];
+  folders: UiFolder[];
   playing: string[];
   startup_notices: string[];
 }
@@ -58,7 +62,7 @@ export const api = {
   stopAll: () => invoke<void>("stop_all"),
   setMasterVolume: (value: number) => invoke<void>("set_master_volume", { value }),
   setSoundVolume: (id: string, value: number) => invoke<void>("set_sound_volume", { id, value }),
-  addSounds: (paths: string[]) => invoke<AddOutcome>("add_sounds", { paths }),
+  addSounds: (paths: string[], folder: string | null) => invoke<AddOutcome>("add_sounds", { paths, folder }),
   getWaveform: (id: string) => invoke<Waveform>("get_waveform", { id }),
   setTrim: (id: string, trim: Trim | null) => invoke<void>("set_trim", { id, trim }),
   previewTrim: (id: string, startSecs: number, endSecs: number) => invoke<void>("preview_trim", { id, startSecs, endSecs }),
@@ -69,6 +73,10 @@ export const api = {
   setSoundImage: (id: string, path: string) => invoke<void>("set_sound_image", { id, path }),
   clearSoundImage: (id: string) => invoke<void>("clear_sound_image", { id }),
   reorderSounds: (ids: string[]) => invoke<void>("reorder_sounds", { ids }),
+  createFolder: (name: string) => invoke<string>("create_folder", { name }),
+  renameFolder: (id: string, name: string) => invoke<void>("rename_folder", { id, name }),
+  deleteFolder: (id: string) => invoke<void>("delete_folder", { id }),
+  moveSounds: (ids: string[], folder: string | null) => invoke<void>("move_sounds", { ids, folder }),
   setHotkey: (id: string, accelerator: string) => invoke<void>("set_hotkey", { id, accelerator }),
   clearHotkey: (id: string) => invoke<void>("clear_hotkey", { id }),
   setStopAllHotkey: (accelerator: string) => invoke<void>("set_stop_all_hotkey", { accelerator }),

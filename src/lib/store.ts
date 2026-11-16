@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { NO_SELECTION } from "./selection";
 import { api, type Toast, type ToastLevel, type UiState } from "./api";
 
 export type Panel = "settings" | "remote" | null;
@@ -13,6 +14,13 @@ interface Store {
   /** A sound just imported on its own; the grid opens the trim editor for it once it is in state. */
   pendingTrimId: string | null;
   setPendingTrim: (id: string | null) => void;
+  /** Folder shown in the grid; null is the top level. Not saved: the app starts on the top level. */
+  openFolder: string | null;
+  /** Selected sound ids (Ctrl+click), always within the open view. */
+  sel: ReadonlySet<string>;
+  setOpenFolder: (id: string | null) => void;
+  setSel: (sel: ReadonlySet<string>) => void;
+  clearSel: () => void;
   init: () => Promise<void>;
   setPanel: (p: Panel) => void;
   togglePanel: (p: Exclude<Panel, null>) => void;
@@ -33,6 +41,11 @@ export const useStore = create<Store>((set, get) => ({
   optimistic: new Set(),
   pendingTrimId: null,
   setPendingTrim: (pendingTrimId) => set({ pendingTrimId }),
+  openFolder: null,
+  sel: NO_SELECTION,
+  setOpenFolder: (openFolder) => set({ openFolder, sel: NO_SELECTION }),
+  setSel: (sel) => set({ sel }),
+  clearSel: () => set({ sel: NO_SELECTION }),
 
   init: async () => {
     if (started) return;

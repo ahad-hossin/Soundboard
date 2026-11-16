@@ -1,16 +1,17 @@
-import { addPaths } from "./actions";
+import { addPaths, moveTo } from "./actions";
 import { api } from "./api";
 import { useStore } from "./store";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("./api", () => ({ api: { addSounds: vi.fn() } }));
+vi.mock("./api", () => ({ api: { addSounds: vi.fn(), moveSounds: vi.fn() } }));
 
 const addSounds = api.addSounds as ReturnType<typeof vi.fn>;
+const moveSounds = api.moveSounds as ReturnType<typeof vi.fn>;
 
 describe("addPaths", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useStore.setState({ toasts: [], pendingTrimId: null });
+    useStore.setState({ toasts: [], pendingTrimId: null, openFolder: null });
   });
 
   it("opens the trim editor when exactly one sound was added", async () => {
@@ -31,5 +32,34 @@ describe("addPaths", () => {
     await addPaths(["C:/a.wav"]);
     expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "Importing sounds failed" });
     expect(useStore.getState().pendingTrimId).toBeNull();
+  });
+
+  it("imports into the open folder", async () => {
+    addSounds.mockResolvedValue({ rejected: [], added_ids: [] });
+    useStore.setState({ openFolder: "f1" });
+    await addPaths(["C:/a.wav"]);
+    expect(addSounds).toHaveBeenCalledWith(["C:/a.wav"], "f1");
+  });
+});
+
+describe("moveTo", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStore.setState({ toasts: [], sel: new Set(["a", "b"]) });
+  });
+
+  it("moves all ids in one call and clears the selection", async () => {
+    moveSounds.mockResolvedValue(undefined);
+    await moveTo(["a", "b"], "f1");
+    expect(moveSounds).toHaveBeenCalledTimes(1);
+    expect(moveSounds).toHaveBeenCalledWith(["a", "b"], "f1");
+    expect(useStore.getState().sel.size).toBe(0);
+  });
+
+  it("keeps the selection and toasts when the move fails", async () => {
+    moveSounds.mockRejectedValue("That folder no longer exists");
+    await moveTo(["a", "b"], "gone");
+    expect(useStore.getState().sel.size).toBe(2);
+    expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "That folder no longer exists" });
   });
 });

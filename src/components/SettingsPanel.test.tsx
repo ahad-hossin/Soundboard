@@ -34,6 +34,7 @@ const base = {
   sounds: [],
   playing: [],
   startup_notices: [],
+  folders: [],
 };
 
 describe("SettingsPanel", () => {

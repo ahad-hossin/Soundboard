@@ -7,11 +7,22 @@ const IMAGES = ["png", "jpg", "jpeg", "webp", "gif"];
 
 /** Imports files; each rejected file becomes a warning toast. A single new sound opens the trim editor. */
 export async function addPaths(paths: string[]) {
-  const { toast, setPendingTrim } = useStore.getState();
+  const { toast, setPendingTrim, openFolder } = useStore.getState();
   try {
-    const { rejected, added_ids } = await api.addSounds(paths);
+    const { rejected, added_ids } = await api.addSounds(paths, openFolder);
     rejected.forEach((r) => toast("warn", r));
     if (added_ids.length === 1) setPendingTrim(added_ids[0]);
+  } catch (e) {
+    toast("error", String(e));
+  }
+}
+
+/** Moves sounds to `folder` (null = top level) in one call. Success clears the selection; failure keeps it so the user can retry. */
+export async function moveTo(ids: string[], folder: string | null) {
+  const { toast, clearSel } = useStore.getState();
+  try {
+    await api.moveSounds(ids, folder);
+    clearSel();
   } catch (e) {
     toast("error", String(e));
   }

@@ -15,6 +15,7 @@ const base = {
   sounds: [],
   playing: [],
   startup_notices: [],
+  folders: [],
 };
 
 const down = { ...base, remote: { ...base.remote, port: null, error: "Could not open port 7331 or the next ten: in use" } };

@@ -4,8 +4,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TileGrid } from "./components/TileGrid";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
-import { api } from "./lib/api";
-import { isTypingTarget } from "./lib/keys";
+import { handleGlobalKey } from "./lib/shortcuts";
 import { useStore } from "./lib/store";
 
 export default function App() {
@@ -18,9 +17,7 @@ export default function App() {
   }, [init]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isTypingTarget(e.target)) void api.stopAll();
-    };
+    const onKey = (e: KeyboardEvent) => handleGlobalKey(e);
     const noMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("keydown", onKey);
     window.addEventListener("contextmenu", noMenu);
