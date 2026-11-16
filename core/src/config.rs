@@ -31,6 +31,9 @@ pub struct Sound {
     /// Non-destructive crop: only this range plays. None plays the whole file.
     #[serde(default)]
     pub trim: Option<Trim>,
+    /// Id of the folder this sound is in; None means the top level.
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 /// Shortest range a trim may keep, in seconds.
@@ -52,6 +55,26 @@ impl Trim {
             && self.end_secs.is_finite()
             && self.start_secs >= 0.0
             && self.end_secs - self.start_secs >= MIN_TRIM_SECS - 1e-4
+    }
+}
+
+/// Longest folder name kept, in characters.
+pub const MAX_FOLDER_NAME: usize = 60;
+pub const NO_SUCH_FOLDER: &str = "That folder no longer exists";
+
+/// A named group of sounds. One level only: folders never contain folders.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+}
+
+/// Trimmed and at most `MAX_FOLDER_NAME` characters; an empty name becomes "Folder".
+pub fn folder_name(raw: &str) -> String {
+    let capped: String = raw.trim().chars().take(MAX_FOLDER_NAME).collect();
+    match capped.trim_end() {
+        "" => "Folder".to_string(),
+        name => name.to_string(),
     }
 }
 
@@ -139,6 +162,8 @@ pub struct Config {
     #[serde(default)]
     pub startup: Startup,
     #[serde(default)]
+    pub folders: Vec<Folder>,
+    #[serde(default)]
     pub sounds: Vec<Sound>,
 }
 
@@ -177,6 +202,7 @@ impl Default for Config {
             remote: RemoteConfig::default(),
             stop_all_hotkey: default_stop_all(),
             startup: Startup::default(),
+            folders: Vec::new(),
             sounds: Vec::new(),
         }
     }
@@ -189,6 +215,46 @@ impl Config {
 
     pub fn sound_mut(&mut self, id: &str) -> Option<&mut Sound> {
         self.sounds.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn folder(&self, id: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| f.id == id)
+    }
+
+    /// Adds a folder at the end and returns its id.
+    pub fn create_folder(&mut self, name: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.folders.push(Folder { id: id.clone(), name: folder_name(name) });
+        id
+    }
+
+    pub fn rename_folder(&mut self, id: &str, name: &str) -> Result<(), &'static str> {
+        self.folders.iter_mut().find(|f| f.id == id).ok_or(NO_SUCH_FOLDER)?.name = folder_name(name);
+        Ok(())
+    }
+
+    /// Removes the folder; its sounds go to the top level. Never deletes a sound.
+    pub fn delete_folder(&mut self, id: &str) -> Result<(), &'static str> {
+        let idx = self.folders.iter().position(|f| f.id == id).ok_or(NO_SUCH_FOLDER)?;
+        self.folders.remove(idx);
+        for s in self.sounds.iter_mut().filter(|s| s.folder.as_deref() == Some(id)) {
+            s.folder = None;
+        }
+        Ok(())
+    }
+
+    /// Puts each listed sound in `folder` (None = top level); unknown sound ids are skipped.
+    /// Returns how many moved. An unknown folder is an error and changes nothing.
+    pub fn move_sounds(&mut self, ids: &[String], folder: Option<&str>) -> Result<usize, &'static str> {
+        if folder.is_some_and(|f| self.folder(f).is_none()) {
+            return Err(NO_SUCH_FOLDER);
+        }
+        let mut moved = 0;
+        for s in self.sounds.iter_mut().filter(|s| ids.contains(&s.id)) {
+            s.folder = folder.map(str::to_string);
+            moved += 1;
+        }
+        Ok(moved)
     }
 
     /// Normalizes valid `#RRGGBB` colors to uppercase, then gives every sound without one the
@@ -219,6 +285,13 @@ impl Config {
             s.trim = s.trim.filter(Trim::is_valid);
         }
         self.assign_colors();
+        // A hand-edited or half-written file may name a folder that is gone.
+        let folder_ids: Vec<String> = self.folders.iter().map(|f| f.id.clone()).collect();
+        for s in &mut self.sounds {
+            if s.folder.as_ref().is_some_and(|f| !folder_ids.contains(f)) {
+                s.folder = None;
+            }
+        }
         self.devices.mic_gain =
             if self.devices.mic_gain.is_finite() { self.devices.mic_gain.clamp(0.0, MAX_MIC_GAIN) } else { 1.0 };
         self
@@ -352,6 +425,7 @@ mod tests {
             hotkey: Some("Ctrl+Shift+Digit1".into()),
             color: Some("#FF595E".into()),
             trim: Some(Trim { start_secs: 0.25, end_secs: 1.5 }),
+            folder: None,
         });
         cfg.devices = Devices {
             speakers: Some("Speakers".into()),
@@ -516,7 +590,7 @@ mod tests {
     #[test]
     fn sound_lookup_by_id() {
         let mut cfg = Config::default();
-        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None });
+        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None, folder: None });
         assert_eq!(cfg.sound("a").unwrap().name, "A");
         assert!(cfg.sound("zzz").is_none());
         cfg.sound_mut("a").unwrap().name = "B".into();
@@ -545,5 +619,88 @@ mod tests {
         assert!(!Trim { start_secs: 0.0, end_secs: 0.049 }.is_valid());
         assert!(!Trim { start_secs: f32::NAN, end_secs: 1.0 }.is_valid());
         assert!(!Trim { start_secs: 0.0, end_secs: f32::INFINITY }.is_valid());
+    }
+
+    fn with_sounds(ids: &[&str]) -> Config {
+        let mut c = Config::default();
+        for id in ids {
+            c.sounds.push(Sound {
+                id: (*id).into(),
+                name: (*id).into(),
+                file: format!("{id}.wav"),
+                image: None,
+                volume: 1.0,
+                hotkey: None,
+                color: Some("#FF595E".into()),
+                trim: None,
+                folder: None,
+            });
+        }
+        c
+    }
+
+    #[test]
+    fn config_without_folders_loads_everything_on_top_level() {
+        let c = load_json(r#"{"sounds":[{"id":"a","name":"A","file":"a.wav"}]}"#);
+        assert!(c.folders.is_empty());
+        assert_eq!(c.sounds[0].folder, None);
+    }
+
+    #[test]
+    fn sanitize_moves_sounds_of_unknown_folders_to_top_level() {
+        let c = load_json(
+            r#"{"folders":[{"id":"f1","name":"Memes"}],
+                "sounds":[{"id":"a","name":"A","file":"a.wav","folder":"f1"},
+                          {"id":"b","name":"B","file":"b.wav","folder":"gone"}]}"#,
+        );
+        assert_eq!(c.sounds[0].folder.as_deref(), Some("f1"));
+        assert_eq!(c.sounds[1].folder, None);
+    }
+
+    #[test]
+    fn folder_name_trims_caps_and_defaults() {
+        assert_eq!(folder_name("  Memes "), "Memes");
+        assert_eq!(folder_name("   "), "Folder");
+        assert_eq!(folder_name(&"x".repeat(80)).chars().count(), MAX_FOLDER_NAME);
+    }
+
+    #[test]
+    fn create_rename_delete_folder() {
+        let mut c = with_sounds(&["a", "b"]);
+        let f = c.create_folder(" Music ");
+        assert_eq!(c.folder(&f).unwrap().name, "Music");
+        c.rename_folder(&f, "Tunes").unwrap();
+        assert_eq!(c.folder(&f).unwrap().name, "Tunes");
+        assert_eq!(c.rename_folder("nope", "x"), Err(NO_SUCH_FOLDER));
+        c.move_sounds(&["a".into()], Some(&f)).unwrap();
+        c.delete_folder(&f).unwrap();
+        assert!(c.folders.is_empty());
+        assert_eq!(c.sounds.len(), 2, "deleting a folder never deletes sounds");
+        assert_eq!(c.sounds[0].folder, None);
+        assert_eq!(c.delete_folder(&f), Err(NO_SUCH_FOLDER));
+    }
+
+    #[test]
+    fn move_sounds_moves_many_and_skips_unknown() {
+        let mut c = with_sounds(&["a", "b", "c"]);
+        let f = c.create_folder("F");
+        assert_eq!(c.move_sounds(&["a".into(), "c".into(), "zzz".into()], Some(&f)), Ok(2));
+        let folders: Vec<_> = c.sounds.iter().map(|s| s.folder.clone()).collect();
+        assert_eq!(folders, vec![Some(f.clone()), None, Some(f.clone())]);
+        assert_eq!(c.move_sounds(&["a".into()], None), Ok(1));
+        assert_eq!(c.sounds[0].folder, None);
+        assert_eq!(c.move_sounds(&["b".into()], Some("gone")), Err(NO_SUCH_FOLDER));
+        assert_eq!(c.sounds[1].folder, None, "a failed move changes nothing");
+    }
+
+    #[test]
+    fn folders_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = with_sounds(&["a", "b"]);
+        let f = cfg.create_folder("Memes");
+        cfg.move_sounds(&["b".into()], Some(&f)).unwrap();
+        save(&path, &cfg).unwrap();
+        assert_eq!(load(&path).into_config(), cfg);
     }
 }
