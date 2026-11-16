@@ -14,7 +14,8 @@ use soundboard_core::remote::protocol::{RemoteFolder, RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
 use tauri::{AppHandle, Emitter, Manager};
 
-pub const CACHE_BYTES: usize = 200 * 1024 * 1024;
+// A 10-minute 48 kHz stereo link sound decodes to about 230 MB and must fit next to the other sounds.
+pub const CACHE_BYTES: usize = 400 * 1024 * 1024;
 
 pub struct App {
     pub config: Config,
