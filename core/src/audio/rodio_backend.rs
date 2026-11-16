@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -25,17 +26,33 @@ fn needs_revalidation(last: Option<Instant>, now: Instant) -> bool {
     }
 }
 
+/// Knee where the limiter starts bending samples toward +-1.
+const KNEE: f32 = 0.9;
+
+/// Soft knee: unchanged below `KNEE`, then approaches +-1 without reaching it.
+fn soft_limit(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= KNEE {
+        return x;
+    }
+    // t/(1+t) rather than tanh: tanh rounds to exactly 1.0 in f32 for large inputs.
+    let t = (a - KNEE) / (1.0 - KNEE);
+    (KNEE + (1.0 - KNEE) * t / (1.0 + t)).copysign(x)
+}
+
 /// Zero-copy rodio source over a cached decoded buffer: every sink shares the same `Arc`.
+/// Applies a live gain (f32 bits), soft-limited when above unity.
 struct SharedSource {
     samples: Arc<Vec<f32>>,
+    gain: Arc<AtomicU32>,
     pos: usize,
     channels: u16,
     sample_rate: u32,
 }
 
 impl SharedSource {
-    fn new(buffer: &DecodedBuffer) -> Self {
-        Self { samples: Arc::clone(&buffer.samples), pos: 0, channels: buffer.channels, sample_rate: buffer.sample_rate }
+    fn new(buffer: &DecodedBuffer, gain: Arc<AtomicU32>) -> Self {
+        Self { samples: Arc::clone(&buffer.samples), gain, pos: 0, channels: buffer.channels, sample_rate: buffer.sample_rate }
     }
 }
 
@@ -45,7 +62,9 @@ impl Iterator for SharedSource {
     fn next(&mut self) -> Option<f32> {
         let s = self.samples.get(self.pos).copied()?;
         self.pos += 1;
-        Some(s)
+        let g = f32::from_bits(self.gain.load(Ordering::Relaxed));
+        // At or below unity the output is exactly what it was before boost existed.
+        Some(if g > 1.0 { soft_limit(s * g) } else { s * g })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -358,6 +377,7 @@ struct AudioThread {
     host: rodio::cpal::Host,
     streams: HashMap<DeviceTarget, DeviceStream>,
     sinks: HashMap<SinkHandle, Sink>,
+    gains: HashMap<SinkHandle, Arc<AtomicU32>>,
     sink_targets: HashMap<SinkHandle, DeviceTarget>,
     last_validated: HashMap<DeviceTarget, Instant>,
     passthrough: Option<Passthrough>,
@@ -373,6 +393,7 @@ fn audio_thread(rx: Receiver<Cmd>, exclusive_fallback: Arc<Mutex<Option<String>>
         host: rodio::cpal::default_host(),
         streams: HashMap::new(),
         sinks: HashMap::new(),
+        gains: HashMap::new(),
         sink_targets: HashMap::new(),
         last_validated: HashMap::new(),
         passthrough: None,
@@ -423,8 +444,8 @@ fn audio_thread(rx: Receiver<Cmd>, exclusive_fallback: Arc<Mutex<Option<String>>
                 }
             }
             Cmd::SetGain(h, g) => {
-                if let Some(s) = st.sinks.get(&h) {
-                    s.set_volume(g);
+                if let Some(a) = st.gains.get(&h) {
+                    a.store(g.to_bits(), Ordering::Relaxed);
                 }
             }
             Cmd::IsFinished(h, reply) => {
@@ -441,6 +462,7 @@ fn audio_thread(rx: Receiver<Cmd>, exclusive_fallback: Arc<Mutex<Option<String>>
             Cmd::Reset => {
                 st.passthrough = None;
                 st.sinks.clear();
+                st.gains.clear();
                 st.sink_targets.clear();
                 st.streams.clear();
                 st.last_validated.clear();
@@ -535,6 +557,7 @@ impl AudioThread {
 
     fn remove_sink(&mut self, h: SinkHandle) -> Option<Sink> {
         self.sink_targets.remove(&h);
+        self.gains.remove(&h);
         self.sinks.remove(&h)
     }
 
@@ -639,11 +662,12 @@ impl AudioThread {
 
     fn play(&mut self, target: &DeviceTarget, buffer: &DecodedBuffer, gain: f32) -> Result<SinkHandle, AudioError> {
         let sink = self.sink_for(target)?;
-        sink.set_volume(gain);
-        sink.append(SharedSource::new(buffer));
+        let g = Arc::new(AtomicU32::new(gain.to_bits()));
+        sink.append(SharedSource::new(buffer, Arc::clone(&g)));
         let h = SinkHandle(self.next);
         self.next += 1;
         self.sinks.insert(h, sink);
+        self.gains.insert(h, g);
         self.sink_targets.insert(h, target.clone());
         Ok(h)
     }
@@ -675,7 +699,7 @@ mod tests {
     #[test]
     fn shared_source_yields_the_buffer_without_copying() {
         let buffer = DecodedBuffer::new(2, 4, vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8, 0.9, -1.0]);
-        let src = SharedSource::new(&buffer);
+        let src = SharedSource::new(&buffer, Arc::new(AtomicU32::new(1.0f32.to_bits())));
         assert!(Arc::ptr_eq(&src.samples, &buffer.samples), "shares the cached Arc");
         assert_eq!(src.channels(), 2);
         assert_eq!(src.sample_rate(), 4);
@@ -685,6 +709,30 @@ mod tests {
         assert_eq!(src.size_hint(), (10, Some(10)));
         let out: Vec<f32> = src.collect();
         assert_eq!(out, *buffer.samples);
+    }
+
+    #[test]
+    fn soft_limit_passes_quiet_samples_and_caps_loud_ones() {
+        assert_eq!(soft_limit(0.5), 0.5);
+        assert_eq!(soft_limit(-0.9), -0.9);
+        for x in [1.0f32, 1.5, 4.0, 100.0] {
+            let y = soft_limit(x);
+            assert!(y > 0.9 && y < 1.0, "{x} -> {y}");
+            assert_eq!(soft_limit(-x), -y);
+        }
+        assert!(soft_limit(1.5) > soft_limit(1.0), "monotonic");
+    }
+
+    #[test]
+    fn shared_source_applies_gain_and_limits_only_above_one() {
+        let buffer = DecodedBuffer::new(1, 1000, vec![0.5, 0.95, -0.95]);
+        let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let unity: Vec<f32> = SharedSource::new(&buffer, Arc::clone(&gain)).collect();
+        assert_eq!(unity, vec![0.5, 0.95, -0.95], "gain 1 is bit-identical");
+        gain.store(2.0f32.to_bits(), Ordering::Relaxed);
+        let loud: Vec<f32> = SharedSource::new(&buffer, gain).collect();
+        assert_eq!(loud[0], soft_limit(1.0));
+        assert!(loud.iter().all(|s| s.abs() < 1.0));
     }
 
     #[test]
