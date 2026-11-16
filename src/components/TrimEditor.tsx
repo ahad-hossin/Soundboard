@@ -163,10 +163,12 @@ export function TrimEditor({ sound, mode, onClose }: Props) {
     return was;
   };
 
-  // Closing the editor any other way still silences a running preview.
+  // Closing the editor any other way still silences a running preview; every close frees the
+  // full decode the backend holds for the editor.
   useEffect(() => () => {
     window.clearTimeout(previewTimer.current);
     if (previewingRef.current) void api.stopPreview();
+    void api.closeTrimEditor();
   }, []);
 
   const togglePreview = async () => {

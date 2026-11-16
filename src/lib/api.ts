@@ -71,6 +71,7 @@ export const api = {
   setTrim: (id: string, trim: Trim | null) => invoke<void>("set_trim", { id, trim }),
   previewTrim: (id: string, startSecs: number, endSecs: number) => invoke<void>("preview_trim", { id, startSecs, endSecs }),
   stopPreview: () => invoke<void>("stop_preview"),
+  closeTrimEditor: () => invoke<void>("close_trim_editor"),
   setSoundColor: (id: string, color: string) => invoke<void>("set_sound_color", { id, color }),
   renameSound: (id: string, name: string) => invoke<void>("rename_sound", { id, name }),
   deleteSound: (id: string) => invoke<void>("delete_sound", { id }),

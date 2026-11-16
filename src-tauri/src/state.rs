@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 use soundboard_core::audio::decode::decode_file;
-use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
+use soundboard_core::audio::{apply_trim, bass_boost, DeviceInfo, Engine, Outputs, RodioBackend};
 use soundboard_core::config::{self, Config, Sound, Startup, Trim};
 use soundboard_core::library::Library;
 use soundboard_core::palette::PALETTE;
@@ -14,8 +14,8 @@ use soundboard_core::remote::protocol::{RemoteFolder, RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
 use tauri::{AppHandle, Emitter, Manager};
 
-// A 10-minute 48 kHz stereo link sound decodes to about 230 MB and must fit next to the other sounds.
-pub const CACHE_BYTES: usize = 400 * 1024 * 1024;
+// 16-bit samples: a 10-minute 48 kHz stereo link sound (about 110 MB) still fits.
+pub const CACHE_BYTES: usize = 200 * 1024 * 1024;
 
 pub struct App {
     pub config: Config,
@@ -398,22 +398,22 @@ pub fn play_and_report(app: &AppHandle, id: &str) {
     emit_state(app, &ctx);
 }
 
-/// Decodes sounds into the engine cache in the background so the first play is instant.
-/// The decode runs outside the App lock; the lock is taken only to look up the path and to
-/// insert the result. `None` warms every sound in config order.
+/// Builds sounds' play buffers (decoded, trimmed, bass-boosted) in the background so the first
+/// play is instant. The work runs outside the App lock; the lock is taken only to look up the
+/// sound and to insert the result. `None` warms every sound in config order.
 pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
     tauri::async_runtime::spawn_blocking(move || {
         let ids = ids.unwrap_or_else(|| lock(&shared).config.sounds.iter().map(|s| s.id.clone()).collect());
         for id in ids {
-            let path = {
+            let (path, trim, bass) = {
                 let a = lock(&shared);
                 match a.config.sound(&id) {
-                    Some(s) if !a.engine.is_cached(&id) => a.library.sound_path(s),
+                    Some(s) if !a.engine.is_cached(&id) => (a.library.sound_path(s), s.trim, s.bass),
                     _ => continue,
                 }
             };
-            let buffer = match decode_file(&path) {
-                Ok(b) => b,
+            let play = match decode_file(&path) {
+                Ok(full) => bass_boost(&apply_trim(&full, trim), bass),
                 Err(e) => {
                     log::debug!("warming {id} failed: {e}");
                     continue;
@@ -421,8 +421,9 @@ pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
             };
             {
                 let mut a = lock(&shared);
-                // The sound may have been deleted or played (and cached) while decoding.
-                if a.config.sound(&id).is_some() && !a.engine.is_cached(&id) && !a.engine.insert_cached(&id, buffer) {
+                // The sound may have been deleted, re-trimmed or played (and cached) meanwhile.
+                let unchanged = a.config.sound(&id).is_some_and(|s| s.trim == trim && s.bass == bass);
+                if unchanged && !a.engine.is_cached(&id) && !a.engine.insert_cached(&id, (trim, bass), play) {
                     break; // cache full; warming never evicts
                 }
             }

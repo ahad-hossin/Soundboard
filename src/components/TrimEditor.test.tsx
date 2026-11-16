@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { api, type UiSound, type Waveform } from "../lib/api";
 import { useStore } from "../lib/store";
 import { TrimEditor } from "./TrimEditor";
@@ -9,6 +9,7 @@ vi.mock("../lib/api", () => ({
     setTrim: vi.fn(),
     previewTrim: vi.fn(),
     stopPreview: vi.fn(),
+    closeTrimEditor: vi.fn(),
   },
 }));
 
@@ -40,6 +41,7 @@ describe("TrimEditor", () => {
     mocked.setTrim.mockResolvedValue(undefined);
     mocked.previewTrim.mockResolvedValue(undefined);
     mocked.stopPreview.mockResolvedValue(undefined);
+    mocked.closeTrimEditor.mockResolvedValue(undefined);
     useStore.setState({ toasts: [] });
   });
 
@@ -118,6 +120,13 @@ describe("TrimEditor", () => {
     const end = screen.getByRole("slider", { name: "Trim end" });
     for (let i = 0; i < 20; i++) fireEvent.keyDown(end, { key: "ArrowLeft", shiftKey: true });
     expect(screen.getByLabelText("End")).toHaveValue("0:00.960");
+  });
+
+  it("unmounting frees the editor's decode once", async () => {
+    await open();
+    expect(mocked.closeTrimEditor).not.toHaveBeenCalled();
+    cleanup();
+    expect(mocked.closeTrimEditor).toHaveBeenCalledTimes(1);
   });
 
   it("an unparsable time is ignored", async () => {

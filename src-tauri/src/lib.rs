@@ -138,6 +138,7 @@ pub fn run() {
             commands::set_bass,
             commands::preview_trim,
             commands::stop_preview,
+            commands::close_trim_editor,
             commands::rename_sound,
             commands::set_sound_color,
             commands::delete_sound,

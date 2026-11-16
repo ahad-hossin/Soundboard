@@ -202,13 +202,13 @@ pub struct Waveform {
     pub trim: Option<Trim>,
 }
 
-/// The sound's full decode and current trim. Uses the cache, or decodes outside the App lock
-/// and caches the result for the preview and the next play.
+/// The sound's full decode and current trim. Uses the trim editor's slot, or decodes outside
+/// the App lock and puts the result in that slot for the preview and the next play.
 async fn full_buffer(ctx: &Ctx, id: &str) -> Result<(DecodedBuffer, Option<Trim>), String> {
     let (path, name, trim, cached) = {
-        let mut a = lock(&ctx.shared);
+        let a = lock(&ctx.shared);
         let sound = a.config.sound(id).cloned().ok_or("That sound no longer exists")?;
-        (a.library.sound_path(&sound), sound.name, sound.trim, a.engine.cached_buffer(id))
+        (a.library.sound_path(&sound), sound.name, sound.trim, a.engine.editor_buffer(id))
     };
     if let Some(buffer) = cached {
         return Ok((buffer, trim));
@@ -219,9 +219,9 @@ async fn full_buffer(ctx: &Ctx, id: &str) -> Result<(DecodedBuffer, Option<Trim>
         .map_err(|e| format!("Could not read \"{name}\": {e}"))?;
     {
         let mut a = lock(&ctx.shared);
-        // The sound may have been deleted or played (and cached) while decoding.
-        if a.config.sound(id).is_some() && !a.engine.is_cached(id) {
-            a.engine.cache_buffer(id, buffer.clone());
+        // The sound may have been deleted while decoding.
+        if a.config.sound(id).is_some() {
+            a.engine.set_editor(id, buffer.clone());
         }
     }
     Ok((buffer, trim))
@@ -270,6 +270,7 @@ pub async fn set_trim(id: String, trim: Option<Trim>, app: AppHandle, ctx: State
         a.refresh_files();
         Ok(())
     })?;
+    spawn_warm(ctx.shared.clone(), Some(vec![id]));
     emit_state(&app, &ctx);
     Ok(())
 }
@@ -284,6 +285,7 @@ pub fn set_bass(id: String, value: f32, app: AppHandle, ctx: State<'_, Ctx>) -> 
         a.mark_dirty();
         Ok(())
     })?;
+    spawn_warm(ctx.shared.clone(), Some(vec![id]));
     emit_state(&app, &ctx);
     Ok(())
 }
@@ -315,6 +317,12 @@ pub async fn preview_trim(id: String, start_secs: f32, end_secs: f32, ctx: State
 #[tauri::command]
 pub fn stop_preview(ctx: State<'_, Ctx>) {
     lock(&ctx.shared).engine.stop_preview();
+}
+
+/// Frees the trim editor's full decode once the editor closes.
+#[tauri::command]
+pub fn close_trim_editor(ctx: State<'_, Ctx>) {
+    lock(&ctx.shared).engine.close_editor();
 }
 
 #[tauri::command]
