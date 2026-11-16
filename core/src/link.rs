@@ -16,7 +16,7 @@ pub fn is_link(url: &str) -> bool {
 }
 
 pub fn find_in_dirs(dirs: &[PathBuf], exe: &str) -> Option<PathBuf> {
-    dirs.iter().map(|d| d.join(exe)).find(|p| p.is_file())
+    dirs.iter().filter(|d| d.is_absolute()).map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
 /// Process PATH, then user and machine PATH read fresh from the registry (winget edits them
@@ -62,7 +62,7 @@ fn registry_paths() -> Vec<OsString> {
 
 pub fn ytdlp_args(url: &str, ffmpeg: &Path, out_dir: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
-        "--ignore-config", "--no-playlist", "--no-progress", "-x", "--audio-format", "mp3",
+        "--ignore-config", "--no-playlist", "--playlist-items", "1", "--no-progress", "-x", "--audio-format", "mp3",
         "--match-filter", &format!("duration<=?{MAX_LINK_SECS}"), "--ffmpeg-location",
     ]
     .iter()
@@ -80,7 +80,17 @@ pub fn error_line(stderr: &str) -> String {
         .lines()
         .rev()
         .find_map(|l| l.strip_prefix("ERROR: "))
-        .map(|l| l.trim().to_string())
+        .map(|l| {
+            let mut l = l.trim();
+            if l.starts_with('[') {
+                l = l.split_once("] ").map_or(l, |(_, rest)| rest);
+            }
+            // yt-dlp's "<video id>: " prefix.
+            match l.split_once(' ') {
+                Some((tok, rest)) if tok.ends_with(':') => rest.to_string(),
+                _ => l.to_string(),
+            }
+        })
         .unwrap_or_else(|| "Download failed".to_string())
 }
 
@@ -176,6 +186,17 @@ mod tests {
     }
 
     #[test]
+    fn skips_relative_and_empty_dirs() {
+        // cargo tests run with cwd = the crate dir, which holds Cargo.toml.
+        assert_eq!(find_in_dirs(&[PathBuf::from("")], "Cargo.toml"), None);
+        assert_eq!(find_in_dirs(&[PathBuf::from("rel")], "Cargo.toml"), None);
+        let a = tempdir().unwrap();
+        std::fs::write(a.path().join("x.exe"), b"").unwrap();
+        let dirs = vec![PathBuf::from(""), a.path().to_path_buf()];
+        assert_eq!(find_in_dirs(&dirs, "x.exe"), Some(a.path().join("x.exe")));
+    }
+
+    #[test]
     fn args_extract_mp3_with_cap_and_no_playlist() {
         let args: Vec<String> = ytdlp_args("https://x.test/v", Path::new("C:/ff/ffmpeg.exe"), Path::new("C:/tmp/o"))
             .into_iter().map(|a| a.to_string_lossy().into_owned()).collect();
@@ -184,6 +205,7 @@ mod tests {
         }
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(after("--audio-format"), "mp3");
+        assert_eq!(after("--playlist-items"), "1");
         assert_eq!(after("--match-filter"), "duration<=?600");
         assert_eq!(after("--ffmpeg-location"), "C:/ff/ffmpeg.exe");
         assert!(after("-o").starts_with("C:/tmp/o"));
@@ -193,7 +215,8 @@ mod tests {
     #[test]
     fn error_line_is_the_last_yt_dlp_error() {
         let stderr = "WARNING: x\nERROR: [youtube] abc: Video unavailable\nERROR: [instagram] Requested content is not available, rate-limit reached or login required\n";
-        assert_eq!(error_line(stderr), "[instagram] Requested content is not available, rate-limit reached or login required");
+        assert_eq!(error_line(stderr), "Requested content is not available, rate-limit reached or login required");
+        assert_eq!(error_line("ERROR: [youtube] abc123: This video is unavailable"), "This video is unavailable");
         assert_eq!(error_line("garbage"), "Download failed");
     }
 }
