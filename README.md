@@ -65,6 +65,24 @@ Download the latest installer from the
 - Trims are non-destructive. The original file is untouched and Reset restores
   it. Importing a single file opens the editor right away.
 
+**Add a sound from a link**
+- Click From link in the top bar and paste a URL (YouTube, Instagram,
+  Facebook and more). The audio is downloaded as mp3, up to 10 minutes, into
+  the folder you have open.
+- Needs yt-dlp and ffmpeg. The installer offers to install them with winget, or
+  run `winget install -e --id yt-dlp.yt-dlp` and
+  `winget install -e --id Gyan.FFmpeg`.
+- If a download fails, the app updates a winget-installed yt-dlp once and
+  retries. Errors show yt-dlp's own message (private, login required,
+  region-blocked, unsupported site). Keep it current with
+  `winget upgrade yt-dlp.yt-dlp`.
+
+**Bass boost and volume**
+- Right-click a tile and choose Bass boost: 0 to 100%, applied from the next
+  play. The file is untouched.
+- Per-sound volume goes up to 200% for quiet clips; above 100% a soft limiter
+  prevents harsh clipping. Master volume stays at 100% at most.
+
 **Phone remote**
 - The app serves a web page on your Wi-Fi. Scan the QR code in the Remote
   panel and your phone shows the same tiles with the same colors and images.
