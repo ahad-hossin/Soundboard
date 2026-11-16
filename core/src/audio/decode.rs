@@ -31,7 +31,8 @@ pub fn decode_file(path: &Path) -> Result<DecodedBuffer, AudioError> {
 }
 
 /// The file's length from its header, without decoding. None when it cannot be opened or the
-/// format does not say (minimp3-era mp3s, some streams).
+/// format does not say, e.g. an mp3 without a Xing/Info/VBRI tag: rodio reports no byte length,
+/// so symphonia cannot estimate from the bitrate. Callers then fall back to a full decode.
 pub fn probe_secs(path: &Path) -> Option<f32> {
     let decoder = Decoder::new(BufReader::new(File::open(path).ok()?)).ok()?;
     decoder.total_duration().map(|d| d.as_secs_f32())

@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -146,7 +144,8 @@ impl<S: Source<Item = f32>> Source for GainStage<S> {
 
 /// `path` decoded as it plays: the `trim` range, bass-boosted, at the live `gain`.
 fn stream_source(path: &Path, trim: Option<Trim>, bass: f32, gain: Arc<AtomicU32>) -> Result<impl Source<Item = f32>, AudioError> {
-    let decoder = Decoder::new(BufReader::new(File::open(path)?))
+    // Read the encoded file up front: the render callbacks must never wait on disk.
+    let decoder = Decoder::new(std::io::Cursor::new(std::fs::read(path)?))
         .map_err(|e| AudioError::Decode(format!("{}: {e}", path.display())))?;
     Ok(shape_stream(decoder, trim, bass, gain))
 }
@@ -847,6 +846,14 @@ mod tests {
         let src = stream_source(&p, None, 0.0, unity()).unwrap();
         assert_eq!((src.channels(), src.sample_rate()), (2, 44100));
         assert_eq!(src.collect::<Vec<f32>>(), decoded);
+    }
+
+    #[test]
+    fn stream_source_keeps_playing_after_its_file_is_deleted() {
+        let (_dir, p, decoded) = test_wav(44100);
+        let src = stream_source(&p, None, 0.0, unity()).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(src.collect::<Vec<f32>>().len(), decoded.len());
     }
 
     #[test]

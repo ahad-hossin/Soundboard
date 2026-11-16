@@ -14,7 +14,7 @@ use soundboard_core::remote::protocol::{RemoteFolder, RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
 use tauri::{AppHandle, Emitter, Manager};
 
-// 16-bit samples: a 10-minute 48 kHz stereo link sound (about 110 MB) still fits.
+// 16-bit play buffers of sounds up to 30 s; longer sounds stream from their file.
 pub const CACHE_BYTES: usize = 200 * 1024 * 1024;
 
 pub struct App {
