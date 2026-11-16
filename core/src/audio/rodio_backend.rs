@@ -11,7 +11,7 @@ use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{FromSample, SampleFormat, SizedSample};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 
-use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+use super::backend::{to_f32, AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
 #[cfg(windows)]
 use super::exclusive::ExclusiveOutput;
 
@@ -43,7 +43,7 @@ fn soft_limit(x: f32) -> f32 {
 /// Zero-copy rodio source over a cached decoded buffer: every sink shares the same `Arc`.
 /// Applies a live gain (f32 bits), soft-limited when above unity.
 struct SharedSource {
-    samples: Arc<Vec<f32>>,
+    samples: Arc<Vec<i16>>,
     gain: Arc<AtomicU32>,
     pos: usize,
     channels: u16,
@@ -60,7 +60,7 @@ impl Iterator for SharedSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let s = self.samples.get(self.pos).copied()?;
+        let s = to_f32(self.samples.get(self.pos).copied()?);
         self.pos += 1;
         let g = f32::from_bits(self.gain.load(Ordering::Relaxed));
         // At or below unity the output is exactly what it was before boost existed.
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn shared_source_yields_the_buffer_without_copying() {
-        let buffer = DecodedBuffer::new(2, 4, vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8, 0.9, -1.0]);
+        let buffer = DecodedBuffer::from_i16(2, 4, vec![3277, -6554, 9830, -13107, 16384, -19661, 22938, -26214, 29491, -32768]);
         let src = SharedSource::new(&buffer, Arc::new(AtomicU32::new(1.0f32.to_bits())));
         assert!(Arc::ptr_eq(&src.samples, &buffer.samples), "shares the cached Arc");
         assert_eq!(src.channels(), 2);
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(src.total_duration(), Some(Duration::from_millis(1250)));
         assert_eq!(src.size_hint(), (10, Some(10)));
         let out: Vec<f32> = src.collect();
-        assert_eq!(out, *buffer.samples);
+        assert_eq!(out, buffer.samples.iter().map(|&s| to_f32(s)).collect::<Vec<f32>>());
     }
 
     #[test]
@@ -725,10 +725,10 @@ mod tests {
 
     #[test]
     fn shared_source_applies_gain_and_limits_only_above_one() {
-        let buffer = DecodedBuffer::new(1, 1000, vec![0.5, 0.95, -0.95]);
+        let buffer = DecodedBuffer::from_i16(1, 1000, vec![16384, 31130, -31130]);
         let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let unity: Vec<f32> = SharedSource::new(&buffer, Arc::clone(&gain)).collect();
-        assert_eq!(unity, vec![0.5, 0.95, -0.95], "gain 1 is bit-identical");
+        assert_eq!(unity, vec![0.5, to_f32(31130), -to_f32(31130)], "gain 1 is bit-identical");
         gain.store(2.0f32.to_bits(), Ordering::Relaxed);
         let loud: Vec<f32> = SharedSource::new(&buffer, gain).collect();
         assert_eq!(loud[0], soft_limit(1.0));

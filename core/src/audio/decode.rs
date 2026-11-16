@@ -15,18 +15,18 @@ pub fn has_supported_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Fully decodes an audio file into interleaved f32 samples.
+/// Fully decodes an audio file into interleaved 16-bit samples (the decoder's native format).
 pub fn decode_file(path: &Path) -> Result<DecodedBuffer, AudioError> {
     let file = File::open(path)?;
     let decoder = Decoder::new(BufReader::new(file))
         .map_err(|e| AudioError::Decode(format!("{}: {e}", path.display())))?;
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
-    let samples: Vec<f32> = decoder.convert_samples::<f32>().collect();
+    let samples: Vec<i16> = decoder.collect();
     if samples.is_empty() {
         return Err(AudioError::Decode(format!("{}: no audio data", path.display())));
     }
-    Ok(DecodedBuffer::new(channels, sample_rate, samples))
+    Ok(DecodedBuffer::from_i16(channels, sample_rate, samples))
 }
 
 #[cfg(test)]
@@ -45,6 +45,9 @@ mod tests {
         assert_eq!(b.sample_rate, 44100);
         assert_eq!(b.samples.len(), 2000);
         assert!((b.duration_secs() - 1000.0 / 44100.0).abs() < 1e-6);
+        // frame 60 of the test sawtooth: ((60 % 100) - 50) * 100, written to both channels by hound
+        assert_eq!(b.samples[120], 1000);
+        assert!((crate::audio::backend::to_f32(b.samples[120]) - 1000.0 / 32768.0).abs() <= 1.0 / 32768.0);
     }
 
     #[test]

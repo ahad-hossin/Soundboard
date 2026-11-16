@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::backend::DecodedBuffer;
+use super::backend::{to_f32, DecodedBuffer};
 use crate::config::Trim;
 
 /// Whole-frame range `[start, end)` that `trim` selects in `buffer`, clamped to the buffer.
@@ -59,7 +59,7 @@ pub fn waveform(buffer: &DecodedBuffer, buckets: usize) -> Vec<f32> {
         let to = (i + 1) * frames / buckets;
         *peak = buffer.samples[from * channels..to * channels]
             .iter()
-            .fold(0.0f32, |m, s| if s.is_finite() { m.max(s.abs()) } else { m });
+            .fold(0.0f32, |m, &s| m.max(to_f32(s).abs()));
     }
     let max = peaks.iter().copied().fold(0.0f32, f32::max);
     if max > 0.0 {
@@ -80,7 +80,7 @@ mod tests {
 
     /// Stereo at 10 Hz: frame i holds samples (i, -i).
     fn stereo(frames: usize) -> DecodedBuffer {
-        DecodedBuffer::new(2, 10, (0..frames).flat_map(|i| [i as f32, -(i as f32)]).collect())
+        DecodedBuffer::from_i16(2, 10, (0..frames).flat_map(|i| [i as i16, -(i as i16)]).collect())
     }
 
     #[test]
@@ -89,7 +89,7 @@ mod tests {
         let t = apply_trim(&b, trim(0.3, 0.8));
         assert_eq!(t.channels, 2);
         assert_eq!(t.sample_rate, 10);
-        assert_eq!(*t.samples, vec![3.0, -3.0, 4.0, -4.0, 5.0, -5.0, 6.0, -6.0, 7.0, -7.0]);
+        assert_eq!(*t.samples, vec![3, -3, 4, -4, 5, -5, 6, -6, 7, -7]);
         assert!((t.duration_secs() - 0.5).abs() < 1e-6);
         assert!((trimmed_duration(&b, trim(0.3, 0.8)) - 0.5).abs() < 1e-6);
     }
@@ -99,8 +99,8 @@ mod tests {
         let b = stereo(20);
         let t = apply_trim(&b, trim(1.5, 9.0));
         assert_eq!(t.samples.len(), 10, "frames 15..20");
-        assert_eq!(t.samples[0], 15.0);
-        assert_eq!(t.samples[9], -19.0);
+        assert_eq!(t.samples[0], 15);
+        assert_eq!(t.samples[9], -19);
     }
 
     #[test]
@@ -120,9 +120,9 @@ mod tests {
 
     #[test]
     fn single_loud_frame_gives_one_full_bucket() {
-        let mut samples = vec![0.0f32; 2 * 100];
-        samples[2 * 42 + 1] = -0.5; // right channel of frame 42
-        let peaks = waveform(&DecodedBuffer::new(2, 44100, samples), 10);
+        let mut samples = vec![0i16; 2 * 100];
+        samples[2 * 42 + 1] = -16384; // right channel of frame 42
+        let peaks = waveform(&DecodedBuffer::from_i16(2, 44100, samples), 10);
         assert_eq!(peaks.len(), 10);
         assert_eq!(peaks[4], 1.0);
         assert_eq!(peaks.iter().filter(|p| **p != 0.0).count(), 1);

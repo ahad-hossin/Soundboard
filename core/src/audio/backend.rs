@@ -28,21 +28,32 @@ pub struct DeviceInfo {
     pub is_default: bool,
 }
 
-/// Interleaved f32 PCM, shared so the cache and active sinks never copy.
+/// Interleaved 16-bit PCM, shared so the cache and active sinks never copy.
 #[derive(Debug, Clone)]
 pub struct DecodedBuffer {
     pub channels: u16,
     pub sample_rate: u32,
-    pub samples: Arc<Vec<f32>>,
+    pub samples: Arc<Vec<i16>>,
+}
+
+/// 16-bit sample to f32 in [-1, 1).
+pub fn to_f32(s: i16) -> f32 {
+    s as f32 / 32768.0
 }
 
 impl DecodedBuffer {
+    /// Converts f32 samples (clamped to [-1, 1]) to 16-bit.
     pub fn new(channels: u16, sample_rate: u32, samples: Vec<f32>) -> Self {
+        let samples = samples.into_iter().map(|x| (x.clamp(-1.0, 1.0) * 32767.0).round() as i16).collect();
+        Self::from_i16(channels, sample_rate, samples)
+    }
+
+    pub fn from_i16(channels: u16, sample_rate: u32, samples: Vec<i16>) -> Self {
         Self { channels, sample_rate, samples: Arc::new(samples) }
     }
 
     pub fn byte_len(&self) -> usize {
-        self.samples.len() * std::mem::size_of::<f32>()
+        self.samples.len() * std::mem::size_of::<i16>()
     }
 
     pub fn duration_secs(&self) -> f32 {
@@ -91,4 +102,22 @@ pub trait AudioBackend: Send + Sync {
     /// Why the exclusive output had to open in shared mode instead, or None while it is
     /// exclusive or not open. Cheap: no round trip to the audio thread.
     fn exclusive_fallback(&self) -> Option<String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_converts_f32_to_16_bit() {
+        let b = DecodedBuffer::new(1, 10, vec![0.0, 1.0, -1.0, 2.0, 0.5]);
+        assert_eq!(*b.samples, vec![0, 32767, -32767, 32767, 16384]);
+        assert_eq!(b.byte_len(), 10);
+    }
+
+    #[test]
+    fn to_f32_maps_full_scale() {
+        assert_eq!(to_f32(-32768), -1.0);
+        assert_eq!(to_f32(16384), 0.5);
+    }
 }

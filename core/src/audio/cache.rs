@@ -94,17 +94,17 @@ mod tests {
         c.insert("a", buf(4));
         let got = c.get("a").unwrap();
         assert_eq!(got.samples.len(), 4);
-        assert_eq!(c.total_bytes(), 16);
+        assert_eq!(c.total_bytes(), 8);
     }
 
     #[test]
     fn evicts_least_recently_used_when_over_cap() {
-        // cap = 16 bytes = four f32 samples; each buffer is 2 samples = 8 bytes
+        // cap = 16 bytes = eight i16 samples; each buffer is 4 samples = 8 bytes
         let mut c = BufferCache::new(16);
-        c.insert("a", buf(2));
-        c.insert("b", buf(2));
+        c.insert("a", buf(4));
+        c.insert("b", buf(4));
         assert!(c.get("a").is_some(), "touch a so b is the oldest");
-        c.insert("c", buf(2));
+        c.insert("c", buf(4));
         assert!(c.get("b").is_none(), "b evicted");
         assert!(c.get("a").is_some());
         assert!(c.get("c").is_some());
@@ -133,7 +133,7 @@ mod tests {
     fn contains_and_room() {
         let mut c = BufferCache::new(16);
         assert!(c.has_room_for(16));
-        c.insert("a", buf(2));
+        c.insert("a", buf(4));
         assert!(c.contains("a"));
         assert!(!c.contains("b"));
         assert!(c.has_room_for(8));
@@ -143,10 +143,10 @@ mod tests {
     #[test]
     fn peek_does_not_refresh_lru_position() {
         let mut c = BufferCache::new(16);
-        c.insert("a", buf(2));
-        c.insert("b", buf(2));
-        assert_eq!(c.peek("a").unwrap().samples.len(), 2);
-        c.insert("c", buf(2));
+        c.insert("a", buf(4));
+        c.insert("b", buf(4));
+        assert_eq!(c.peek("a").unwrap().samples.len(), 4);
+        c.insert("c", buf(4));
         assert!(c.peek("a").is_none(), "a stayed the oldest and was evicted");
     }
 
@@ -156,6 +156,6 @@ mod tests {
         c.insert("a", buf(2));
         c.insert("a", buf(6));
         assert_eq!(c.len(), 1);
-        assert_eq!(c.total_bytes(), 24);
+        assert_eq!(c.total_bytes(), 12);
     }
 }

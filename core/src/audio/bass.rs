@@ -1,6 +1,6 @@
 //! Non-destructive bass boost: a low-shelf filter plus soft saturation, applied to a decoded buffer.
 
-use super::backend::DecodedBuffer;
+use super::backend::{to_f32, DecodedBuffer};
 
 const SHELF_HZ: f64 = 120.0;
 const MAX_BOOST_DB: f64 = 18.0;
@@ -20,7 +20,7 @@ pub fn bass_boost(buffer: &DecodedBuffer, strength: f32) -> DecodedBuffer {
     let mut state = vec![[0.0f64; 4]; channels]; // x1, x2, y1, y2 per channel
     let mut out: Vec<f32> = buffer.samples.iter().enumerate().map(|(i, &x)| {
         let st = &mut state[i % channels];
-        let x = x as f64;
+        let x = to_f32(x) as f64;
         let y = coeffs[0] * x + coeffs[1] * st[0] + coeffs[2] * st[1] - coeffs[3] * st[2] - coeffs[4] * st[3];
         *st = [x, st[0], y, st[2]];
         (drive * y as f32).tanh() / norm
@@ -52,6 +52,7 @@ fn low_shelf(rate: f64, gain_db: f64) -> [f64; 5] {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use crate::audio::backend::to_f32;
 
     fn sine(freq: f32, amp: f32, channels: u16) -> DecodedBuffer {
         let rate = 44100;
@@ -66,7 +67,7 @@ mod tests {
         // skip the first 0.1 s so the filter has settled
         let skip = b.sample_rate as usize / 10 * b.channels as usize;
         let s = &b.samples[skip..];
-        (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+        (s.iter().map(|&x| to_f32(x).powi(2)).sum::<f32>() / s.len() as f32).sqrt()
     }
 
     #[test]
@@ -88,7 +89,7 @@ mod tests {
     fn never_exceeds_full_scale() {
         for strength in [0.3, 1.0] {
             let out = bass_boost(&sine(60.0, 1.0, 2), strength);
-            assert!(out.samples.iter().all(|s| s.abs() <= 1.0 + 1e-6));
+            assert!(out.samples.iter().all(|&s| to_f32(s).abs() <= 1.0));
         }
     }
 
@@ -102,6 +103,6 @@ mod tests {
         }
         let out = bass_boost(&DecodedBuffer::new(2, 44100, samples), 1.0);
         assert_eq!((out.channels, out.sample_rate, out.samples.len()), (2, 44100, 88200));
-        assert!(out.samples.iter().skip(1).step_by(2).all(|s| *s == 0.0), "silent right stays silent");
+        assert!(out.samples.iter().skip(1).step_by(2).all(|&s| s == 0), "silent right stays silent");
     }
 }
