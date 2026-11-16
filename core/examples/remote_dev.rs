@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use soundboard_core::palette::PALETTE;
 use soundboard_core::remote::auth::{hash_pin, Lockout};
-use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
+use soundboard_core::remote::protocol::{RemoteFolder, RemoteSound, ServerMsg};
 use soundboard_core::remote::{bind, router, serve, Hub, RemoteHandler};
 
 struct Dev {
@@ -33,8 +33,17 @@ fn snapshot(playing: &[String], seqs: &HashMap<String, u64>, volumes: &HashMap<S
                 // Sound 7 plays with an unknown length to exercise the indeterminate bar.
                 duration_secs: if i == 7 { None } else { Some(1.0) },
                 play_seq: seqs.get(&format!("s{i}")).copied().unwrap_or(0),
+                folder: match i {
+                    4 | 5 => Some("f1".into()),
+                    6 | 7 => Some("f2".into()),
+                    _ => None,
+                },
             })
             .collect(),
+        folders: vec![
+            RemoteFolder { id: "f1".into(), name: "Memes".into() },
+            RemoteFolder { id: "f2".into(), name: "Music".into() },
+        ],
     }
 }
 

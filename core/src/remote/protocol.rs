@@ -12,12 +12,20 @@ pub struct RemoteSound {
     pub duration_secs: Option<f32>,
     /// Bumped on every successful play so clients can restart the progress sweep.
     pub play_seq: u64,
+    /// Folder id, or None for the top level.
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteFolder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    State { master_volume: f32, playing: Vec<String>, sounds: Vec<RemoteSound> },
+    State { master_volume: f32, playing: Vec<String>, sounds: Vec<RemoteSound>, folders: Vec<RemoteFolder> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,12 +46,22 @@ mod tests {
         let m = ServerMsg::State {
             master_volume: 0.8,
             playing: vec!["u1".into()],
-            sounds: vec![RemoteSound { id: "u1".into(), name: "Airhorn".into(), volume: 1.0, has_image: true, color: "#FF595E".into(), duration_secs: Some(2.5), play_seq: 3 }],
+            sounds: vec![RemoteSound {
+                id: "u1".into(),
+                name: "Airhorn".into(),
+                volume: 1.0,
+                has_image: true,
+                color: "#FF595E".into(),
+                duration_secs: Some(2.5),
+                play_seq: 3,
+                folder: Some("f1".into()),
+            }],
+            folders: vec![RemoteFolder { id: "f1".into(), name: "Memes".into() }],
         };
         let json = serde_json::to_string(&m).unwrap();
         assert_eq!(
             json,
-            r##"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true,"color":"#FF595E","duration_secs":2.5,"play_seq":3}]}"##
+            r##"{"type":"state","master_volume":0.8,"playing":["u1"],"sounds":[{"id":"u1","name":"Airhorn","volume":1.0,"has_image":true,"color":"#FF595E","duration_secs":2.5,"play_seq":3,"folder":"f1"}],"folders":[{"id":"f1","name":"Memes"}]}"##
         );
     }
 

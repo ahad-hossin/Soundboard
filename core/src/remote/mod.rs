@@ -325,7 +325,7 @@ mod tests {
 
     impl RemoteHandler for Recorder {
         fn snapshot(&self) -> ServerMsg {
-            ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![] }
+            ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![], folders: vec![] }
         }
         fn play(&self, id: &str) {
             self.0.lock().unwrap().push(format!("play:{id}"));
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn hub_broadcast_without_subscribers_is_fine() {
         let hub = Hub::new();
-        hub.broadcast_state(&ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![] });
+        hub.broadcast_state(&ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![], folders: vec![] });
         hub.kick_all();
         assert_eq!(hub.client_count(), 0);
     }
@@ -391,7 +391,7 @@ mod tests {
     async fn hub_subscriber_receives_state_and_kick() {
         let hub = Hub::new();
         let mut rx = hub.subscribe();
-        hub.broadcast_state(&ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![] });
+        hub.broadcast_state(&ServerMsg::State { master_volume: 1.0, playing: vec![], sounds: vec![], folders: vec![] });
         hub.kick_all();
         assert!(matches!(rx.recv().await.unwrap(), HubEvent::State(_)));
         assert!(matches!(rx.recv().await.unwrap(), HubEvent::Kick));
