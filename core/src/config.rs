@@ -31,6 +31,9 @@ pub struct Sound {
     /// Non-destructive crop: only this range plays. None plays the whole file.
     #[serde(default)]
     pub trim: Option<Trim>,
+    /// Bass boost strength 0..=1; 0 is off. Applied after the trim, never to the file.
+    #[serde(default)]
+    pub bass: f32,
     /// Id of the folder this sound is in; None means the top level.
     #[serde(default)]
     pub folder: Option<String>,
@@ -285,6 +288,7 @@ impl Config {
         self.master_volume = clamp_or(self.master_volume, 1.0, default_master());
         for s in &mut self.sounds {
             s.volume = clamp_or(s.volume, MAX_SOUND_VOLUME, 1.0);
+            s.bass = clamp_or(s.bass, 1.0, 0.0);
             s.trim = s.trim.filter(Trim::is_valid);
         }
         self.assign_colors();
@@ -373,7 +377,7 @@ mod tests {
     fn sound_volume_keeps_up_to_200_percent() {
         let mut cfg = Config::default();
         for (id, v) in [("a", 1.5), ("b", 3.0), ("c", f32::NAN), ("d", -1.0)] {
-            cfg.sounds.push(Sound { id: id.into(), name: id.into(), file: format!("{id}.wav"), image: None, volume: v, hotkey: None, color: None, trim: None, folder: None });
+            cfg.sounds.push(Sound { id: id.into(), name: id.into(), file: format!("{id}.wav"), image: None, volume: v, hotkey: None, color: None, trim: None, bass: 0.0, folder: None });
         }
         let cfg = cfg.sanitize();
         let vols: Vec<f32> = cfg.sounds.iter().map(|s| s.volume).collect();
@@ -439,6 +443,7 @@ mod tests {
             hotkey: Some("Ctrl+Shift+Digit1".into()),
             color: Some("#FF595E".into()),
             trim: Some(Trim { start_secs: 0.25, end_secs: 1.5 }),
+            bass: 0.0,
             folder: None,
         });
         cfg.devices = Devices {
@@ -604,7 +609,7 @@ mod tests {
     #[test]
     fn sound_lookup_by_id() {
         let mut cfg = Config::default();
-        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None, folder: None });
+        cfg.sounds.push(Sound { id: "a".into(), name: "A".into(), file: "a.wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None, bass: 0.0, folder: None });
         assert_eq!(cfg.sound("a").unwrap().name, "A");
         assert!(cfg.sound("zzz").is_none());
         cfg.sound_mut("a").unwrap().name = "B".into();
@@ -635,6 +640,15 @@ mod tests {
         assert!(!Trim { start_secs: 0.0, end_secs: f32::INFINITY }.is_valid());
     }
 
+    #[test]
+    fn bass_defaults_to_off_and_is_clamped() {
+        let json = r#"{"sounds":[{"id":"a","name":"A","file":"a.wav"},{"id":"b","name":"B","file":"b.wav","bass":4.0},{"id":"c","name":"C","file":"c.wav","bass":0.4}]}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        let cfg = cfg.sanitize();
+        let bass: Vec<f32> = cfg.sounds.iter().map(|s| s.bass).collect();
+        assert_eq!(bass, vec![0.0, 1.0, 0.4]);
+    }
+
     fn with_sounds(ids: &[&str]) -> Config {
         let mut c = Config::default();
         for id in ids {
@@ -647,6 +661,7 @@ mod tests {
                 hotkey: None,
                 color: Some("#FF595E".into()),
                 trim: None,
+                bass: 0.0,
                 folder: None,
             });
         }

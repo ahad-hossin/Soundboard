@@ -89,6 +89,7 @@ pub struct UiSound {
     pub duration_secs: Option<f32>,
     pub play_seq: u64,
     pub trim: Option<Trim>,
+    pub bass: f32,
     /// Folder id, or None for the top level.
     pub folder: Option<String>,
 }
@@ -274,7 +275,7 @@ impl App {
         }
         let outcome = self
             .engine
-            .play_file(&sound.id, sound.volume, &path, sound.trim)
+            .play_file(&sound.id, sound.volume, &path, sound.trim, sound.bass)
             .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))?;
         // The file is evidently there (again); clear a stale missing flag.
         self.files.entry(sound.id.clone()).or_default().0 = false;
@@ -326,6 +327,7 @@ impl App {
                         duration_secs: self.engine.cached_duration(&s.id, s.trim),
                         play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                         trim: s.trim,
+                        bass: s.bass,
                         folder: s.folder.clone(),
                     }
                 })

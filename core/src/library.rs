@@ -132,6 +132,7 @@ impl Library {
             hotkey: None,
             color: Some(next_color(used_colors).to_string()),
             trim: None,
+            bass: 0.0,
             folder: None,
         })
     }
@@ -193,6 +194,7 @@ impl Library {
                 hotkey: None,
                 color: Some(color),
                 trim: None,
+                bass: 0.0,
                 folder: None,
             });
         }
@@ -254,6 +256,7 @@ mod tests {
             hotkey: None,
             color: Some(crate::palette::PALETTE[0].to_string()),
             trim: None,
+            bass: 0.0,
             folder: None,
         }
     }
@@ -393,6 +396,7 @@ mod tests {
                 hotkey: None,
                 color: None,
                 trim: None,
+                bass: 0.0,
                 folder: None,
             };
             assert_eq!(lib.sound_path(&s), lib.sounds_dir().join(INVALID_NAME), "{bad}");
@@ -400,7 +404,7 @@ mod tests {
             lib.delete_sound(&s).unwrap();
         }
         assert!(outside.exists(), "delete never reaches outside the library");
-        let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None, folder: None };
+        let ok = Sound { id: "i".into(), name: "n".into(), file: "clip (2).wav".into(), image: None, volume: 1.0, hotkey: None, color: None, trim: None, bass: 0.0, folder: None };
         assert_eq!(lib.sound_path(&ok), lib.sounds_dir().join("clip (2).wav"));
     }
 

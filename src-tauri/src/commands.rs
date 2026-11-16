@@ -237,6 +237,20 @@ pub async fn set_trim(id: String, trim: Option<Trim>, app: AppHandle, ctx: State
     Ok(())
 }
 
+/// Stores a sound's bass boost strength (0 is off). The file itself is never changed.
+#[tauri::command]
+pub fn set_bass(id: String, value: f32, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    let value = if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+    mutate(&ctx, |a| {
+        a.config.sound_mut(&id).ok_or("That sound no longer exists")?.bass = value;
+        a.engine.set_bass(&id, value);
+        a.mark_dirty();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
 /// Plays `start_secs..end_secs` of a sound through the normal outputs, replacing any preview.
 /// Previews are not listed as playing.
 #[tauri::command]
@@ -253,7 +267,7 @@ pub async fn preview_trim(id: String, start_secs: f32, end_secs: f32, ctx: State
         let sound = a.config.sound(&id).cloned().ok_or("That sound no longer exists")?;
         let path = a.library.sound_path(&sound);
         a.engine
-            .preview(&id, &path, trim, sound.volume)
+            .preview(&id, &path, trim, sound.volume, sound.bass)
             .map(|_| ())
             .map_err(|e| format!("Could not play \"{}\": {e}", sound.name))
     })

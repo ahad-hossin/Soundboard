@@ -134,6 +134,7 @@ pub fn run() {
             commands::add_sounds,
             commands::get_waveform,
             commands::set_trim,
+            commands::set_bass,
             commands::preview_trim,
             commands::stop_preview,
             commands::rename_sound,

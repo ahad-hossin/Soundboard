@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+use super::bass::bass_boost;
 use super::cache::BufferCache;
 use super::decode::decode_file;
 use super::trim::{apply_trim, trimmed_duration};
@@ -79,9 +80,9 @@ pub struct Engine<B: AudioBackend> {
     backend: B,
     /// Full decoded files, so the trim editor can always show the whole waveform.
     cache: BufferCache,
-    /// Per sound id: the trim a slice was cut for, and that slice. Only kept while the full
-    /// buffer is cached, so it never outgrows the cache by more than the trimmed sounds.
-    trimmed: HashMap<String, (Trim, DecodedBuffer)>,
+    /// Per sound id: the trim and bass a processed slice was made for, and that slice. Only kept
+    /// while the full buffer is cached, so it never outgrows the cache by more than those sounds.
+    trimmed: HashMap<String, (Option<Trim>, f32, DecodedBuffer)>,
     master: f32,
     outputs: Outputs,
     active: Vec<Active>,
@@ -256,9 +257,9 @@ impl<B: AudioBackend> Engine<B> {
 
     /// Plays the file, or only its `trim` range. The full decode is cached; the trimmed slice is
     /// cut once per trim and reused.
-    pub fn play_file(&mut self, sound_id: &str, sound_volume: f32, path: &Path, trim: Option<Trim>) -> Result<PlayOutcome, AudioError> {
+    pub fn play_file(&mut self, sound_id: &str, sound_volume: f32, path: &Path, trim: Option<Trim>, bass: f32) -> Result<PlayOutcome, AudioError> {
         let full = self.full_buffer(sound_id, path)?;
-        let buffer = self.trimmed_buffer(sound_id, &full, trim);
+        let buffer = self.trimmed_buffer(sound_id, &full, trim, bass);
         self.play_buffer(sound_id, sound_volume, &buffer)
     }
 
@@ -272,27 +273,34 @@ impl<B: AudioBackend> Engine<B> {
         Ok(b)
     }
 
-    fn trimmed_buffer(&mut self, sound_id: &str, full: &DecodedBuffer, trim: Option<Trim>) -> DecodedBuffer {
+    fn trimmed_buffer(&mut self, sound_id: &str, full: &DecodedBuffer, trim: Option<Trim>, bass: f32) -> DecodedBuffer {
         // Drop slices whose full buffer was evicted, so slices never pile up past the cache.
         let cache = &self.cache;
         self.trimmed.retain(|id, _| cache.contains(id));
-        let Some(t) = trim else {
+        if trim.is_none() && bass == 0.0 {
             self.trimmed.remove(sound_id);
             return full.clone();
-        };
-        if let Some((cut_for, slice)) = self.trimmed.get(sound_id) {
-            if *cut_for == t {
+        }
+        if let Some((t, b, slice)) = self.trimmed.get(sound_id) {
+            if *t == trim && *b == bass {
                 return slice.clone();
             }
         }
-        let slice = apply_trim(full, Some(t));
-        self.trimmed.insert(sound_id.to_string(), (t, slice.clone()));
+        let slice = bass_boost(&apply_trim(full, trim), bass);
+        self.trimmed.insert(sound_id.to_string(), (trim, bass, slice.clone()));
         slice
     }
 
     /// Forgets the cut slice when the trim changed; the next play slices the cached decode again.
     pub fn set_trim(&mut self, sound_id: &str, trim: Option<Trim>) {
-        if self.trimmed.get(sound_id).map(|(cut_for, _)| *cut_for) != trim {
+        if self.trimmed.get(sound_id).is_some_and(|(t, _, _)| *t != trim) {
+            self.trimmed.remove(sound_id);
+        }
+    }
+
+    /// Forgets the processed slice when the bass changed; the next play builds it again.
+    pub fn set_bass(&mut self, sound_id: &str, bass: f32) {
+        if self.trimmed.get(sound_id).is_some_and(|(_, b, _)| *b != bass) {
             self.trimmed.remove(sound_id);
         }
     }
@@ -320,10 +328,10 @@ impl<B: AudioBackend> Engine<B> {
     }
 
     /// Plays `trim` of the sound under the hidden `PREVIEW_ID`, replacing any running preview.
-    pub fn preview(&mut self, sound_id: &str, path: &Path, trim: Trim, sound_volume: f32) -> Result<PlayOutcome, AudioError> {
+    pub fn preview(&mut self, sound_id: &str, path: &Path, trim: Trim, sound_volume: f32, bass: f32) -> Result<PlayOutcome, AudioError> {
         self.stop_preview();
         let full = self.full_buffer(sound_id, path)?;
-        let slice = apply_trim(&full, Some(trim));
+        let slice = bass_boost(&apply_trim(&full, Some(trim)), bass);
         self.play_buffer(PREVIEW_ID, sound_volume, &slice)
     }
 
@@ -639,8 +647,8 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 500);
         let mut e = engine(both(), 1.0);
-        e.play_file("a", 1.0, &p, None).unwrap();
-        e.play_file("a", 1.0, &p, None).unwrap();
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
         assert_eq!(e.cached(), 1);
         e.invalidate("a");
         assert_eq!(e.cached(), 0);
@@ -658,7 +666,7 @@ mod tests {
         assert_eq!(e.cached(), 1);
         assert!(e.backend().calls().is_empty(), "no Play call");
         // Path no longer needed: play hits the cache instead of decoding.
-        e.play_file("a", 1.0, Path::new("Z:/gone.wav"), None).unwrap();
+        e.play_file("a", 1.0, Path::new("Z:/gone.wav"), None, 0.0).unwrap();
         assert_eq!(e.cached(), 1);
     }
 
@@ -694,7 +702,7 @@ mod tests {
     #[test]
     fn play_file_missing_is_io_error() {
         let mut e = engine(both(), 1.0);
-        assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/nope.wav"), None), Err(AudioError::Io(_))));
+        assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/nope.wav"), None, 0.0), Err(AudioError::Io(_))));
     }
 
     #[test]
@@ -988,7 +996,7 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 44100); // 1 s stereo
         let mut e = engine(speakers_only(), 1.0);
-        e.play_file("a", 1.0, &p, trim(0.25, 0.75)).unwrap();
+        e.play_file("a", 1.0, &p, trim(0.25, 0.75), 0.0).unwrap();
         assert_eq!(played_lengths(&e), vec![2 * 22050]);
         assert_eq!(e.cached_buffer("a").unwrap().samples.len(), 2 * 44100, "cache holds the whole file");
         assert!((e.cached_duration("a", trim(0.25, 0.75)).unwrap() - 0.5).abs() < 1e-4);
@@ -1001,18 +1009,36 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 44100);
         let mut e = engine(speakers_only(), 1.0);
-        e.play_file("a", 1.0, &p, trim(0.0, 0.5)).unwrap();
-        let first = e.trimmed.get("a").unwrap().1.samples.clone();
-        e.play_file("a", 1.0, &p, trim(0.0, 0.5)).unwrap();
-        assert!(Arc::ptr_eq(&first, &e.trimmed.get("a").unwrap().1.samples), "no second slice");
+        e.play_file("a", 1.0, &p, trim(0.0, 0.5), 0.0).unwrap();
+        let first = e.trimmed.get("a").unwrap().2.samples.clone();
+        e.play_file("a", 1.0, &p, trim(0.0, 0.5), 0.0).unwrap();
+        assert!(Arc::ptr_eq(&first, &e.trimmed.get("a").unwrap().2.samples), "no second slice");
         e.set_trim("a", trim(0.0, 0.5));
         assert!(e.trimmed.contains_key("a"), "same trim keeps the slice");
         e.set_trim("a", trim(0.1, 0.5));
         assert!(!e.trimmed.contains_key("a"), "changed trim drops it");
-        e.play_file("a", 1.0, &p, trim(0.1, 0.5)).unwrap();
-        e.play_file("a", 1.0, &p, None).unwrap();
+        e.play_file("a", 1.0, &p, trim(0.1, 0.5), 0.0).unwrap();
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
         assert!(!e.trimmed.contains_key("a"), "untrimmed play drops a stale slice");
         assert_eq!(played_lengths(&e), vec![2 * 22050, 2 * 22050, 2 * 17640, 2 * 44100]);
+    }
+
+    #[test]
+    fn bass_slice_is_reused_until_the_bass_changes() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let mut e = engine(speakers_only(), 1.0);
+        e.play_file("a", 1.0, &p, None, 0.5).unwrap();
+        let first = e.trimmed.get("a").unwrap().2.samples.clone();
+        e.play_file("a", 1.0, &p, None, 0.5).unwrap();
+        assert!(Arc::ptr_eq(&first, &e.trimmed.get("a").unwrap().2.samples), "no second pass");
+        e.set_bass("a", 0.5);
+        assert!(e.trimmed.contains_key("a"), "same bass keeps it");
+        e.set_bass("a", 0.8);
+        assert!(!e.trimmed.contains_key("a"), "changed bass drops it");
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        assert!(!e.trimmed.contains_key("a"), "plain play keeps nothing extra");
     }
 
     #[test]
@@ -1021,7 +1047,7 @@ mod tests {
         let p = dir.path().join("clip.wav");
         write_test_wav(&p, 4410);
         let mut e = engine(speakers_only(), 1.0);
-        e.play_file("a", 1.0, &p, trim(0.0, 0.06)).unwrap();
+        e.play_file("a", 1.0, &p, trim(0.0, 0.06), 0.0).unwrap();
         e.invalidate("a");
         assert!(!e.is_cached("a"));
         assert!(e.trimmed.is_empty());
@@ -1035,11 +1061,11 @@ mod tests {
         write_test_wav(&p, 44100);
         let mut e = engine(speakers_only(), 0.5);
         let t = Trim { start_secs: 0.5, end_secs: 1.0 };
-        e.preview("a", &p, t, 0.8).unwrap();
+        e.preview("a", &p, t, 0.8, 0.0).unwrap();
         assert!(e.playing().is_empty(), "preview is not a playing sound");
         let first = e.backend().handles();
-        e.play_file("a", 1.0, &p, None).unwrap();
-        e.preview("a", &p, t, 0.8).unwrap();
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        e.preview("a", &p, t, 0.8, 0.0).unwrap();
         let calls = e.backend().calls();
         assert!(calls.contains(&Call::Stop(first[0])), "second preview stops the first");
         assert_eq!(e.playing(), vec!["a".to_string()], "the real play keeps going");
