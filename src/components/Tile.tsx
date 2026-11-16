@@ -14,9 +14,13 @@ interface Props {
   onPlay: () => void;
   onVolume: (v: number) => void;
   onContextMenu: (e: MouseEvent) => void;
+  /** In the desktop multi-selection: white outline and a check mark. */
+  selected?: boolean;
+  /** Ctrl+click toggles selection. Without it every click plays. */
+  onToggleSelect?: () => void;
 }
 
-export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props) {
+export function Tile({ sound, playing, onPlay, onVolume, onContextMenu, selected = false, onToggleSelect }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sound.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const src = sound.image_path ? `${convertFileSrc(sound.image_path)}?v=${sound.image_rev}` : null;
@@ -28,14 +32,16 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
         type="button"
         {...attributes}
         {...listeners}
-        onClick={onPlay}
+        onClick={(e) => (onToggleSelect && (e.ctrlKey || e.metaKey) ? onToggleSelect() : onPlay())}
         onContextMenu={onContextMenu}
         aria-label={sound.name}
         aria-pressed={playing}
+        data-selected={selected || undefined}
         style={src ? undefined : tileDecoration(sound.id, sound.color)}
         className={cx(
           "relative block h-full w-full overflow-hidden rounded-md bg-surface-2 text-left text-white outline-none ring-accent transition-[box-shadow,transform] duration-100 focus-visible:ring-2 active:scale-[0.96]",
           playing && "ring-2",
+          selected && "outline outline-2 outline-offset-2 outline-white",
         )}
       >
         {src && (
@@ -45,6 +51,11 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
           {sound.name}
         </span>
         {src && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[3px]" style={{ backgroundColor: sound.color }} />}
+        {selected && (
+          <span aria-hidden className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-[12px] font-bold text-black">
+            ✓
+          </span>
+        )}
         {playing && (
           <span
             key={sound.play_seq}
@@ -65,7 +76,7 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu }: Props)
           </span>
         )}
         {sound.missing_file && (
-          <span title="File missing" className="absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[11px] text-danger">
+          <span title="File missing" className={cx("absolute top-1.5 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[11px] text-danger", selected ? "left-8" : "left-1.5")}>
             !
           </span>
         )}

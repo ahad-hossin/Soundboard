@@ -10,9 +10,9 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
 
   return (
     <div ref={ref} role="menu" style={{ left: pos.x, top: pos.y }} className="fixed z-50 min-w-40 rounded-md border border-border bg-surface py-1 shadow-xl">
-      {items.map((it) => (
+      {items.map((it, i) => (
         <button
-          key={it.label}
+          key={i}
           type="button"
           role="menuitem"
           onClick={() => { it.onSelect(); onClose(); }}

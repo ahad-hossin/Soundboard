@@ -11,11 +11,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const sound: UiSound = { id: "s1", name: "Airhorn", volume: 0.7, hotkey: "Ctrl+Shift+Digit1", color: "#FF595E", image_path: null, image_rev: 0, missing_file: false, duration_secs: 2.5, play_seq: 1, trim: null, folder: null };
 
-function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void) {
+function tree(s: UiSound, playing: boolean, onPlay: () => void, onVolume: (v: number) => void, extra: { selected?: boolean; onToggleSelect?: () => void } = {}) {
   return (
     <DndContext>
       <SortableContext items={[s.id]}>
-        <Tile sound={s} playing={playing} onPlay={onPlay} onVolume={onVolume} onContextMenu={() => {}} />
+        <Tile sound={s} playing={playing} onPlay={onPlay} onVolume={onVolume} onContextMenu={() => {}} {...extra} />
       </SortableContext>
     </DndContext>
   );
@@ -155,5 +155,23 @@ describe("Tile", () => {
   it("slider is skipped by Tab", () => {
     renderTile();
     expect(screen.getByLabelText("Airhorn volume")).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("Ctrl+click selects instead of playing", () => {
+    const onPlay = vi.fn();
+    const onToggleSelect = vi.fn();
+    render(tree(sound, false, onPlay, vi.fn(), { onToggleSelect }));
+    const btn = screen.getByRole("button", { name: "Airhorn" });
+    fireEvent.click(btn, { ctrlKey: true });
+    expect(onToggleSelect).toHaveBeenCalledTimes(1);
+    expect(onPlay).not.toHaveBeenCalled();
+    fireEvent.click(btn);
+    expect(onPlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a selected tile", () => {
+    render(tree(sound, false, vi.fn(), vi.fn(), { selected: true }));
+    expect(screen.getByRole("button", { name: "Airhorn" })).toHaveAttribute("data-selected", "true");
+    expect(screen.getByText("✓")).toBeInTheDocument();
   });
 });
