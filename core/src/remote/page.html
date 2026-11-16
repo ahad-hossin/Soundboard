@@ -37,6 +37,15 @@ main{flex:1;overflow-y:auto;padding:8px}
 .tile.img .bar{display:block}
 .tile.playing{box-shadow:0 0 0 2px var(--accent)}
 .tile:active{transform:scale(.97)}
+.tile.folder,.tile.back{background:var(--surface);border:1px solid var(--border);color:var(--text)}
+.tile.folder{display:flex;flex-direction:column;padding:8px}
+.tile.folder .pv{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:4px}
+.tile.folder .pv i{border-radius:4px;background:var(--surface-2)}
+.tile.folder .fn{display:flex;align-items:baseline;gap:6px;margin-top:8px}
+.tile.folder .fn b{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile.folder .fn small{color:var(--dim);font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.tile.back{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--dim)}
+.tile.back span{font-size:24px;line-height:1}
 footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
 .stop{width:100%;height:44px;border:1px solid var(--danger);border-radius:var(--radius);background:transparent;color:var(--danger);font-weight:500}
 .stop.on{background:var(--danger);color:var(--text)}
@@ -164,59 +173,110 @@ footer{flex-shrink:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}
     el.appendChild(track);
   }
 
+  // Folder shown on the phone; page memory only, so a reload starts on the top level.
+  let openFolder = null;
+  function viewItems() {
+    if (openFolder !== null && !state.folders.some((f) => f.id === openFolder)) openFolder = null;
+    const items = [];
+    if (openFolder === null) for (const f of state.folders) items.push({ key: "f:" + f.id, folder: f });
+    else items.push({ key: "back" });
+    for (const s of state.sounds) if ((s.folder ?? null) === openFolder) items.push({ key: s.id, sound: s });
+    return items;
+  }
+  function openView(id) {
+    openFolder = id;
+    buzz();
+    grid.parentElement.scrollTop = 0;
+    render();
+  }
+  function newSoundTile(s) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "tile";
+    el.dataset.id = s.id;
+    el.dataset.key = s.id;
+    el.addEventListener("click", () => {
+      // The click that ends a long-press must not also play the sound.
+      if (suppressClick) { suppressClick = false; return; }
+      el.classList.add("playing"); buzz(); send({ type: "play", id: el.dataset.id });
+    });
+    wireLongPress(el);
+    const name = document.createElement("span");
+    name.className = "name";
+    el.appendChild(name);
+    // After the name so the color bar paints above the scrim and keeps its true color.
+    const bar = document.createElement("span");
+    bar.className = "bar";
+    bar.setAttribute("aria-hidden", "true");
+    el.appendChild(bar);
+    return el;
+  }
+  function syncSoundTile(el, s, playing) {
+    const wantImg = s.has_image ? `/img/${s.id}` : "";
+    let img = el.querySelector("img");
+    if (wantImg && !img) { img = document.createElement("img"); img.alt = ""; el.prepend(img); }
+    if (!wantImg && img) img.remove();
+    if (img && img.getAttribute("src") !== wantImg) img.src = wantImg;
+    el.querySelector(".name").textContent = s.name;
+    el.setAttribute("aria-label", s.name);
+    el.style.setProperty("--c", s.color);
+    decorate(el, s);
+    el.classList.toggle("img", s.has_image);
+    el.classList.toggle("playing", playing.has(s.id));
+    syncSweep(el, s, playing.has(s.id));
+  }
+  function newFolderTile(f) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "tile folder";
+    el.dataset.key = "f:" + f.id;
+    el.dataset.folder = f.id;
+    el.innerHTML = '<span class="pv" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="fn"><b></b><small></small></span>';
+    el.addEventListener("click", () => openView(el.dataset.folder));
+    return el;
+  }
+  function syncFolderTile(el, f, playing) {
+    const inside = state.sounds.filter((s) => s.folder === f.id);
+    el.querySelector("b").textContent = f.name;
+    el.querySelector("small").textContent = String(inside.length);
+    el.setAttribute("aria-label", `${f.name}, ${inside.length} ${inside.length === 1 ? "sound" : "sounds"}`);
+    el.querySelectorAll(".pv i").forEach((dot, i) => { dot.style.background = inside[i] ? inside[i].color : ""; });
+    el.classList.toggle("playing", inside.some((s) => playing.has(s.id)));
+  }
+  function newBackTile() {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "tile back";
+    el.dataset.key = "back";
+    el.setAttribute("aria-label", "Back");
+    el.innerHTML = '<span aria-hidden="true">←</span>Back';
+    el.addEventListener("click", () => openView(null));
+    return el;
+  }
   function render() {
     if (!state) return;
     if (!masterDragging) { master.value = state.master_volume; mpct.textContent = pct(state.master_volume); }
-    empty.classList.toggle("hidden", state.sounds.length > 0);
     const playing = new Set(state.playing);
     stop.classList.toggle("on", playing.size > 0);
-    // Drop tiles the server no longer has before the walk, so the cursor never rests on a stale
+    const items = viewItems();
+    empty.classList.toggle("hidden", items.length > 0);
+    // Drop tiles not in this view before the walk, so the cursor never rests on a stale
     // node (which would make every live tile after it look out of place and get moved).
-    const live = new Set(state.sounds.map((s) => s.id));
-    for (const el of [...grid.children]) if (!live.has(el.dataset.id)) el.remove();
-    // Walk the grid in server order and move a node only when it is out of place: moving a
+    const live = new Set(items.map((it) => it.key));
+    for (const el of [...grid.children]) if (!live.has(el.dataset.key)) el.remove();
+    // Walk the grid in view order and move a node only when it is out of place: moving a
     // node restarts its CSS animations, which would reset every running sweep on each state push.
     let cursor = grid.firstElementChild;
-    for (const s of state.sounds) {
-      let el = grid.querySelector(`[data-id="${s.id}"]`);
-      if (!el) {
-        el = document.createElement("button");
-        el.type = "button";
-        el.className = "tile";
-        el.dataset.id = s.id;
-        el.addEventListener("click", () => {
-          // The click that ends a long-press must not also play the sound.
-          if (suppressClick) { suppressClick = false; return; }
-          el.classList.add("playing"); buzz(); send({ type: "play", id: el.dataset.id });
-        });
-        wireLongPress(el);
-        const name = document.createElement("span");
-        name.className = "name";
-        el.appendChild(name);
-        // After the name so the color bar paints above the scrim and keeps its true color.
-        const bar = document.createElement("span");
-        bar.className = "bar";
-        bar.setAttribute("aria-hidden", "true");
-        el.appendChild(bar);
-      }
-      const wantImg = s.has_image ? `/img/${s.id}` : "";
-      let img = el.querySelector("img");
-      if (wantImg && !img) { img = document.createElement("img"); img.alt = ""; el.prepend(img); }
-      if (!wantImg && img) img.remove();
-      if (img && img.getAttribute("src") !== wantImg) img.src = wantImg;
-      el.querySelector(".name").textContent = s.name;
-      el.setAttribute("aria-label", s.name);
-      el.style.setProperty("--c", s.color);
-      decorate(el, s);
-      el.classList.toggle("img", s.has_image);
-      el.classList.toggle("playing", playing.has(s.id));
-      syncSweep(el, s, playing.has(s.id));
+    for (const it of items) {
+      let el = grid.querySelector(`[data-key="${CSS.escape(it.key)}"]`);
+      if (!el) el = it.sound ? newSoundTile(it.sound) : it.folder ? newFolderTile(it.folder) : newBackTile();
+      if (it.sound) syncSoundTile(el, it.sound, playing);
+      else if (it.folder) syncFolderTile(el, it.folder, playing);
       if (el === cursor) cursor = cursor.nextElementSibling;
       else grid.insertBefore(el, cursor);
     }
     syncSheet();
   }
-
   // Long-press a tile (450 ms, moving less than 8 px) to open the volume sheet instead of playing.
   function wireLongPress(el) {
     let timer = null, x0 = 0, y0 = 0;
