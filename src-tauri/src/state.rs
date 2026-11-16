@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
-use soundboard_core::audio::decode::decode_file;
+use soundboard_core::audio::decode::{decode_file, probe_secs};
 use soundboard_core::audio::{apply_trim, bass_boost, DeviceInfo, Engine, Outputs, RodioBackend};
 use soundboard_core::config::{self, Config, Sound, Startup, Trim};
 use soundboard_core::library::Library;
@@ -418,15 +418,25 @@ fn warm(shared: Shared, ids: Option<Vec<String>>, evict: bool) {
         let ids = ids.unwrap_or_else(|| lock(&shared).config.sounds.iter().map(|s| s.id.clone()).collect());
         for id in ids {
             let _one = WARMING.lock().unwrap_or_else(|e| e.into_inner());
-            let (path, trim, bass) = {
+            let (path, trim, bass, known) = {
                 let a = lock(&shared);
                 match a.config.sound(&id) {
-                    Some(s) if !a.engine.is_cached(&id) => (a.library.sound_path(s), s.trim, s.bass),
+                    Some(s) if !a.engine.is_cached(&id) => (a.library.sound_path(s), s.trim, s.bass, a.engine.full_secs(&id)),
                     _ => continue,
                 }
             };
-            let play = match decode_file(&path) {
-                Ok(full) => bass_boost(&apply_trim(&full, trim), bass),
+            let probed = if known.is_none() { probe_secs(&path) } else { None };
+            {
+                let mut a = lock(&shared);
+                if let Some(secs) = probed {
+                    a.engine.set_full_secs(&id, secs);
+                }
+                if a.engine.streams(&id, &path, trim) {
+                    continue; // plays from the file; nothing to cache
+                }
+            }
+            let (full_secs, play) = match decode_file(&path) {
+                Ok(full) => (full.duration_secs(), bass_boost(&apply_trim(&full, trim), bass)),
                 Err(e) => {
                     log::debug!("warming {id} failed: {e}");
                     continue;
@@ -434,9 +444,10 @@ fn warm(shared: Shared, ids: Option<Vec<String>>, evict: bool) {
             };
             {
                 let mut a = lock(&shared);
+                a.engine.set_full_secs(&id, full_secs);
                 // The sound may have been deleted, re-trimmed or played (and cached) meanwhile.
                 let unchanged = a.config.sound(&id).is_some_and(|s| s.trim == trim && s.bass == bass);
-                if unchanged && !a.engine.is_cached(&id) {
+                if unchanged && !a.engine.is_cached(&id) && !a.engine.streams(&id, &path, trim) {
                     if evict {
                         a.engine.insert_play_buffer(&id, (trim, bass), play);
                     } else if !a.engine.insert_cached(&id, (trim, bass), play) {

@@ -4,9 +4,14 @@ use std::path::Path;
 
 /// Writes a 16-bit stereo 44.1 kHz WAV with `frames` frames of a quiet sawtooth.
 pub fn write_test_wav(path: &Path, frames: u32) {
+    write_test_wav_at(path, frames, 44100);
+}
+
+/// `write_test_wav` at another sample rate; a low rate makes a long file tiny.
+pub fn write_test_wav_at(path: &Path, frames: u32, sample_rate: u32) {
     let spec = hound::WavSpec {
         channels: 2,
-        sample_rate: 44100,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };

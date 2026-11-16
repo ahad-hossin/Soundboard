@@ -11,6 +11,20 @@ use crate::config::{Trim, MAX_MIC_GAIN, MAX_SOUND_VOLUME};
 pub const TEST_TONE_ID: &str = "__test_tone__";
 /// Hidden sound id of the trim editor's "Play selection"; never listed in `playing()`.
 pub const PREVIEW_ID: &str = "__preview__";
+/// Sounds that play longer than this are streamed from the file instead of cached decoded.
+pub const STREAM_SECS: f32 = 30.0;
+
+/// Length of what plays: the trim range, capped at the file's `full` length, or the whole file.
+pub fn play_secs(full: f32, trim: Option<Trim>) -> f32 {
+    trim.map(|t| t.end_secs.min(full) - t.start_secs).unwrap_or(full)
+}
+
+/// rodio cannot seek FLAC or Ogg, so a stream of those would decode up to the trim start on the
+/// audio thread; only mp3 and wav may start mid-file.
+fn starts_without_seeking(path: &Path, trim: Option<Trim>) -> bool {
+    let seekable = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mp3") || e.eq_ignore_ascii_case("wav"));
+    seekable || trim.is_none_or(|t| t.start_secs <= 0.0)
+}
 
 /// Ids that are not library sounds and never show as playing.
 fn is_hidden(sound_id: &str) -> bool {
@@ -84,6 +98,8 @@ pub struct Engine<B: AudioBackend> {
     cut_for: HashMap<String, (Option<Trim>, f32)>,
     /// The trim editor's full decode, held only while the editor is open.
     editor: Option<(String, Option<DecodedBuffer>)>,
+    /// Each sound file's full length in seconds, once probed or decoded.
+    full_secs: HashMap<String, f32>,
     master: f32,
     outputs: Outputs,
     active: Vec<Active>,
@@ -112,6 +128,7 @@ impl<B: AudioBackend> Engine<B> {
             cache: BufferCache::new(cache_bytes),
             cut_for: HashMap::new(),
             editor: None,
+            full_secs: HashMap::new(),
             master: master.clamp(0.0, 1.0),
             outputs,
             active: Vec::new(),
@@ -257,15 +274,24 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
-    /// Plays the file, or only its `trim` range. Only the processed slice is cached, tagged with
+    /// Plays the file, or only its `trim` range. A sound that `streams` decodes from the file as
+    /// it plays and is never cached. Otherwise only the processed slice is cached, tagged with
     /// the trim and bass it was made for; the full decode is dropped unless the editor holds it.
     pub fn play_file(&mut self, sound_id: &str, sound_volume: f32, path: &Path, trim: Option<Trim>, bass: f32) -> Result<PlayOutcome, AudioError> {
+        if self.streams(sound_id, path, trim) {
+            return self.fan_out(sound_id, sound_volume, |b, target, gain| b.play_stream(target, path, trim, bass, gain));
+        }
         let hit = if self.cached_tag(sound_id) == Some((trim, bass)) { self.cache.get(sound_id) } else { None };
         let buffer = match hit {
             Some(b) => b,
             None => {
-                let play = bass_boost(&apply_trim(&self.full_buffer(sound_id, path)?, trim), bass);
-                self.insert_play_buffer(sound_id, (trim, bass), play.clone());
+                let full = self.full_buffer(sound_id, path)?;
+                self.set_full_secs(sound_id, full.duration_secs());
+                let play = bass_boost(&apply_trim(&full, trim), bass);
+                // Found long only now: play this decode once; later plays stream.
+                if !self.streams(sound_id, path, trim) {
+                    self.insert_play_buffer(sound_id, (trim, bass), play.clone());
+                }
                 play
             }
         };
@@ -304,15 +330,35 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
+    /// Records the file's full length, from a probe or a full decode.
+    pub fn set_full_secs(&mut self, sound_id: &str, secs: f32) {
+        self.full_secs.insert(sound_id.to_string(), secs);
+    }
+
+    pub fn full_secs(&self, sound_id: &str) -> Option<f32> {
+        self.full_secs.get(sound_id).copied()
+    }
+
+    /// Play length when the full length is known and it is over `STREAM_SECS`.
+    fn long_play_secs(&self, sound_id: &str, trim: Option<Trim>) -> Option<f32> {
+        self.full_secs(sound_id).map(|f| play_secs(f, trim)).filter(|&s| s > STREAM_SECS)
+    }
+
+    /// True when this sound with `trim` plays from the file instead of a cached buffer.
+    pub fn streams(&self, sound_id: &str, path: &Path, trim: Option<Trim>) -> bool {
+        self.long_play_secs(sound_id, trim).is_some() && starts_without_seeking(path, trim)
+    }
+
     pub fn is_cached(&self, sound_id: &str) -> bool {
         self.cache.contains(sound_id)
     }
 
-    /// Length in seconds of what plays, when the cached play buffer was cut for `trim`.
+    /// Length in seconds of what plays, when the cached play buffer was cut for `trim` or the
+    /// sound is long enough to stream.
     pub fn cached_duration(&self, sound_id: &str, trim: Option<Trim>) -> Option<f32> {
         match self.cached_tag(sound_id) {
             Some((t, _)) if t == trim => self.cache.peek(sound_id).map(|b| b.duration_secs()),
-            _ => None,
+            _ => self.long_play_secs(sound_id, trim),
         }
     }
 
@@ -332,6 +378,7 @@ impl<B: AudioBackend> Engine<B> {
     /// lands after close is dropped.
     pub fn set_editor(&mut self, sound_id: &str, full: DecodedBuffer) {
         if let Some((_, slot)) = self.editor.as_mut().filter(|(id, _)| id == sound_id) {
+            self.full_secs.insert(sound_id.to_string(), full.duration_secs());
             *slot = Some(full);
         }
     }
@@ -375,6 +422,17 @@ impl<B: AudioBackend> Engine<B> {
     /// Plays `buffer` on every output. A sound that is already playing is stopped first, so
     /// replaying restarts it; different sounds overlap.
     pub fn play_buffer(&mut self, sound_id: &str, sound_volume: f32, buffer: &DecodedBuffer) -> Result<PlayOutcome, AudioError> {
+        self.fan_out(sound_id, sound_volume, |b, target, gain| b.play(target, buffer, gain))
+    }
+
+    /// Opens one sink per output with `play(backend, target, gain)`, falling back to the default
+    /// device for a missing one, as `play_buffer` describes.
+    fn fan_out(
+        &mut self,
+        sound_id: &str,
+        sound_volume: f32,
+        play: impl Fn(&B, &DeviceTarget, f32) -> Result<SinkHandle, AudioError>,
+    ) -> Result<PlayOutcome, AudioError> {
         let targets = self.outputs.targets();
         if targets.is_empty() {
             return Err(AudioError::NoOutputs);
@@ -398,13 +456,13 @@ impl<B: AudioBackend> Engine<B> {
             if is_default_name && played_default {
                 continue;
             }
-            let result = match self.backend.play(&target, buffer, gain) {
+            let result = match play(&self.backend, &target, gain) {
                 Err(AudioError::DeviceNotFound(name)) => {
                     fallbacks.push(name);
                     if played_default {
                         continue;
                     }
-                    let r = self.backend.play(&DeviceTarget::Default, buffer, gain);
+                    let r = play(&self.backend, &DeviceTarget::Default, gain);
                     if r.is_ok() {
                         played_default = true;
                     }
@@ -475,6 +533,7 @@ impl<B: AudioBackend> Engine<B> {
 
     pub fn invalidate(&mut self, sound_id: &str) {
         self.uncache(sound_id);
+        self.full_secs.remove(sound_id);
         if self.editor.as_ref().is_some_and(|(id, _)| id == sound_id) {
             self.close_editor();
         }
@@ -510,7 +569,7 @@ pub fn sine(freq: f32, secs: f32, sample_rate: u32) -> DecodedBuffer {
 mod tests {
     use super::*;
     use crate::audio::fake_backend::{Call, FakeBackend};
-    use crate::test_util::write_test_wav;
+    use crate::test_util::{write_test_wav, write_test_wav_at};
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1200,5 +1259,133 @@ mod tests {
         e.stop_preview();
         assert_eq!(e.playing(), vec!["a".to_string()]);
         assert_eq!(e.backend().calls().iter().filter(|c| matches!(c, Call::Stop(_))).count(), 2);
+    }
+
+    fn stream_calls(e: &Engine<FakeBackend>) -> Vec<Call> {
+        e.backend().calls().into_iter().filter(|c| matches!(c, Call::PlayStream { .. })).collect()
+    }
+
+    #[test]
+    fn play_secs_is_the_trim_range_capped_at_the_file() {
+        assert_eq!(play_secs(60.0, None), 60.0);
+        assert_eq!(play_secs(60.0, trim(5.0, 20.0)), 15.0);
+        assert_eq!(play_secs(60.0, trim(5.0, 100.0)), 55.0);
+    }
+
+    #[test]
+    fn a_known_long_sound_streams_on_every_output_and_caches_nothing() {
+        let gone = Path::new("Z:/gone.mp3");
+        let mut e = engine(both(), 0.5);
+        e.set_full_secs("a", 60.0);
+        assert_eq!(e.full_secs("a"), Some(60.0));
+        let out = e.play_file("a", 0.8, gone, None, 0.3).unwrap();
+        assert_eq!(out.sinks, 2);
+        assert!(!e.backend().calls().iter().any(|c| matches!(c, Call::Play { .. })));
+        let targets: Vec<_> = stream_calls(&e)
+            .into_iter()
+            .map(|c| match c {
+                Call::PlayStream { target, path, trim: t, bass, gain, .. } => {
+                    assert_eq!(path.as_path(), gone);
+                    assert_eq!(t, None);
+                    assert_eq!(bass, 0.3);
+                    assert!((gain - 0.4).abs() < 1e-6);
+                    target
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(targets, both().targets());
+        assert_eq!(e.cached(), 0);
+        assert_eq!(e.playing(), vec!["a".to_string()]);
+        assert_eq!(e.cached_duration("a", None), Some(60.0));
+        e.play_file("a", 1.0, gone, trim(5.0, 45.0), 0.0).unwrap();
+        assert!(matches!(stream_calls(&e).last(), Some(Call::PlayStream { trim: t, .. }) if *t == trim(5.0, 45.0)));
+        assert_eq!(stream_calls(&e).len(), 4);
+        assert_eq!(e.cached_duration("a", trim(5.0, 45.0)), Some(40.0));
+        assert_eq!(e.cached(), 0);
+    }
+
+    #[test]
+    fn a_long_sound_trimmed_below_the_threshold_uses_the_cache() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let mut e = engine(speakers_only(), 1.0);
+        e.set_full_secs("a", 60.0); // pretend the 1 s file is long
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        assert_eq!(stream_calls(&e).len(), 1);
+        assert!(!e.is_cached("a"));
+        e.set_trim("a", trim(0.0, 0.5));
+        e.play_file("a", 1.0, &p, trim(0.0, 0.5), 0.0).unwrap();
+        assert_eq!(stream_calls(&e).len(), 1, "no second stream");
+        assert_eq!(played_lengths(&e), vec![2 * 22050]);
+        assert!(e.is_cached("a"));
+        assert!((e.cached_duration("a", trim(0.0, 0.5)).unwrap() - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_unknown_long_sound_plays_its_decode_once_uncached_then_streams() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("long.wav");
+        write_test_wav_at(&p, 31 * 1000, 1000); // 31 s at 1 kHz
+        let mut e = engine(speakers_only(), 1.0);
+        assert_eq!(e.full_secs("a"), None);
+        assert_eq!(e.cached_duration("a", None), None);
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        assert_eq!(played_lengths(&e), vec![2 * 31000]);
+        assert_eq!(e.cached(), 0, "a long decode is not cached");
+        assert!((e.full_secs("a").unwrap() - 31.0).abs() < 1e-3);
+        e.play_file("a", 1.0, &p, None, 0.0).unwrap();
+        assert_eq!(stream_calls(&e).len(), 1);
+        assert_eq!(played_lengths(&e).len(), 1, "no second decode");
+    }
+
+    #[test]
+    fn volume_changes_reach_a_stream() {
+        let mut e = engine(speakers_only(), 0.5);
+        e.set_full_secs("a", 60.0);
+        e.play_file("a", 1.0, Path::new("Z:/gone.mp3"), None, 0.0).unwrap();
+        let h = e.backend().handles()[0];
+        assert!((e.backend().gain(h).unwrap() - 0.5).abs() < 1e-6);
+        e.set_sound_volume("a", 0.4);
+        assert!((e.backend().gain(h).unwrap() - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_editor_decode_records_the_length_and_invalidate_forgets_it() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let mut e = engine(speakers_only(), 1.0);
+        e.open_editor("a");
+        e.set_editor("a", decode_file(&p).unwrap());
+        assert!((e.full_secs("a").unwrap() - 1.0).abs() < 1e-4);
+        e.invalidate("a");
+        assert_eq!(e.full_secs("a"), None);
+        e.set_full_secs("b", 60.0);
+        e.invalidate("b");
+        assert_eq!(e.full_secs("b"), None);
+        assert_eq!(e.cached_duration("b", None), None);
+    }
+
+    #[test]
+    fn flac_and_ogg_stream_only_from_the_file_start() {
+        let mut e = engine(speakers_only(), 1.0);
+        assert!(!e.streams("a", Path::new("a.mp3"), None), "unknown length");
+        e.set_full_secs("a", 60.0);
+        for (file, t, expect) in [
+            ("a.mp3", trim(5.0, 60.0), true),
+            ("a.WAV", trim(5.0, 60.0), true),
+            ("a.flac", None, true),
+            ("a.OGG", trim(0.0, 50.0), true),
+            ("a.flac", trim(5.0, 60.0), false),
+            ("a.ogg", trim(5.0, 60.0), false),
+            ("a.mp3", trim(0.0, 20.0), false),
+        ] {
+            assert_eq!(e.streams("a", Path::new(file), t), expect, "{file} {t:?}");
+        }
+        // The cache path decodes, so a missing file is an Io error and nothing streams.
+        assert!(matches!(e.play_file("a", 1.0, Path::new("Z:/gone.flac"), trim(5.0, 60.0), 0.0), Err(AudioError::Io(_))));
+        assert!(stream_calls(&e).is_empty());
     }
 }
