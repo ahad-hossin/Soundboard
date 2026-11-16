@@ -9,6 +9,7 @@ import { targetIds, toggle } from "../lib/selection";
 import { useStore } from "../lib/store";
 import { summarize, viewSounds } from "../lib/view";
 import { Banner } from "./Banner";
+import { BassPopover } from "./BassPopover";
 import { ColorPicker } from "./ColorPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { ConfirmDialog, RenameDialog } from "./Dialogs";
@@ -42,6 +43,7 @@ export function TileGrid() {
   const [picking, setPicking] = useState<Menu | null>(null);
   const [capturing, setCapturing] = useState<UiSound | null>(null);
   const [trimming, setTrimming] = useState<UiSound | null>(null);
+  const [bassing, setBassing] = useState<Menu | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [folderMenu, setFolderMenu] = useState<FolderMenu | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<UiFolder | null>(null);
@@ -82,6 +84,7 @@ export function TileGrid() {
         : []),
       { label: "Rename", onSelect: () => setRenaming(s) },
       { label: s.trim ? "Trim audio (trimmed)" : "Trim audio", onSelect: () => setTrimming(s) },
+      { label: s.bass > 0 ? `Bass boost (${Math.round(s.bass * 100)}%)` : "Bass boost…", onSelect: () => menu && setBassing({ sound: s, x: menu.x, y: menu.y }) },
       { label: s.image_path ? "Change image" : "Set image", onSelect: () => void pickImageFor(s.id) },
       ...(s.image_path ? [{ label: "Remove image", onSelect: () => void run(api.clearSoundImage(s.id)) }] : []),
       { label: "Change color", onSelect: () => menu && setPicking({ sound: s, x: menu.x, y: menu.y }) },
@@ -190,6 +193,16 @@ export function TileGrid() {
           danger
           onCancel={() => setDeletingFolder(null)}
           onConfirm={() => { void run(api.deleteFolder(deletingFolder.id)); setDeletingFolder(null); }}
+        />
+      )}
+      {bassing && (
+        <BassPopover
+          x={bassing.x}
+          y={bassing.y}
+          name={bassing.sound.name}
+          value={bassing.sound.bass}
+          onCommit={(v) => void run(api.setBass(bassing.sound.id, v))}
+          onClose={() => setBassing(null)}
         />
       )}
       {picking && (

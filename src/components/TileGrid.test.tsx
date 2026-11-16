@@ -9,11 +9,11 @@ vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDr
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (p: string) => "asset://" + p, invoke: vi.fn() }));
 vi.mock("../lib/actions", () => ({ addPaths: vi.fn(), pickAndAddSounds: vi.fn(), pickImageFor: vi.fn(), moveTo: vi.fn() }));
 vi.mock("../lib/api", () => ({
-  api: { reorderSounds: vi.fn(), createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), deleteSound: vi.fn(), setSoundVolume: vi.fn() },
+  api: { reorderSounds: vi.fn(), createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), deleteSound: vi.fn(), setSoundVolume: vi.fn(), setBass: vi.fn() },
 }));
 
 const snd = (id: string, folder: string | null): UiSound => ({
-  id, name: id.toUpperCase(), volume: 1, hotkey: null, color: "#FF595E", image_path: null, image_rev: 0,
+  id, name: id.toUpperCase(), volume: 1, bass: 0, hotkey: null, color: "#FF595E", image_path: null, image_rev: 0,
   missing_file: false, duration_secs: null, play_seq: 0, trim: null, folder,
 });
 
@@ -107,5 +107,15 @@ describe("TileGrid", () => {
   it("shows the grid, not the empty state, when there are folders but no sounds", () => {
     setup([], folders);
     expect(screen.getByRole("button", { name: "Folder Memes, 0 sounds" })).toBeInTheDocument();
+  });
+
+  it("opens the bass boost slider from the context menu", () => {
+    setup([snd("a", null)], []);
+    fireEvent.contextMenu(screen.getByRole("button", { name: "A" }));
+    fireEvent.click(screen.getByText("Bass boost…"));
+    const slider = screen.getByLabelText("A bass boost");
+    fireEvent.change(slider, { target: { value: "0.5" } });
+    fireEvent.pointerUp(slider);
+    expect(api.setBass).toHaveBeenCalledWith("a", 0.5);
   });
 });

@@ -17,6 +17,8 @@ export interface UiSound {
   id: string;
   name: string;
   volume: number;
+  /** Bass boost strength 0..1; 0 is off. */
+  bass: number;
   hotkey: string | null;
   color: string;
   image_path: string | null;
@@ -62,6 +64,7 @@ export const api = {
   stopAll: () => invoke<void>("stop_all"),
   setMasterVolume: (value: number) => invoke<void>("set_master_volume", { value }),
   setSoundVolume: (id: string, value: number) => invoke<void>("set_sound_volume", { id, value }),
+  setBass: (id: string, value: number) => invoke<void>("set_bass", { id, value }),
   addSounds: (paths: string[], folder: string | null) => invoke<AddOutcome>("add_sounds", { paths, folder }),
   getWaveform: (id: string) => invoke<Waveform>("get_waveform", { id }),
   setTrim: (id: string, trim: Trim | null) => invoke<void>("set_trim", { id, trim }),

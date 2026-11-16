@@ -2,7 +2,7 @@ import type { UiSound } from "./api";
 import { summarize, viewSounds } from "./view";
 
 const s = (id: string, folder: string | null, color = "#FF595E"): UiSound => ({
-  id, name: id, volume: 1, hotkey: null, color, image_path: null, image_rev: 0,
+  id, name: id, volume: 1, bass: 0, hotkey: null, color, image_path: null, image_rev: 0,
   missing_file: false, duration_secs: null, play_seq: 0, trim: null, folder,
 });
 
