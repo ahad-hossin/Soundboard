@@ -83,7 +83,7 @@ pub struct Engine<B: AudioBackend> {
     /// The (trim, bass) each play buffer was made for. Valid only while `cache` holds the id.
     cut_for: HashMap<String, (Option<Trim>, f32)>,
     /// The trim editor's full decode, held only while the editor is open.
-    editor: Option<(String, DecodedBuffer)>,
+    editor: Option<(String, Option<DecodedBuffer>)>,
     master: f32,
     outputs: Outputs,
     active: Vec<Active>,
@@ -265,11 +265,7 @@ impl<B: AudioBackend> Engine<B> {
             Some(b) => b,
             None => {
                 let play = bass_boost(&apply_trim(&self.full_buffer(sound_id, path)?, trim), bass);
-                self.cache.insert(sound_id, play.clone());
-                self.cut_for.insert(sound_id.to_string(), (trim, bass));
-                // Drop tags of buffers the insert evicted.
-                let cache = &self.cache;
-                self.cut_for.retain(|id, _| cache.contains(id));
+                self.insert_play_buffer(sound_id, (trim, bass), play.clone());
                 play
             }
         };
@@ -322,12 +318,22 @@ impl<B: AudioBackend> Engine<B> {
 
     /// The trim editor's full decode, if the editor slot holds this sound.
     pub fn editor_buffer(&self, sound_id: &str) -> Option<DecodedBuffer> {
-        self.editor.as_ref().filter(|(id, _)| id == sound_id).map(|(_, b)| b.clone())
+        self.editor.as_ref().filter(|(id, _)| id == sound_id).and_then(|(_, b)| b.clone())
     }
 
-    /// Holds `full` for the open trim editor, replacing whatever the slot held.
+    /// Opens the editor slot on this sound, empty, unless it is already open on it.
+    pub fn open_editor(&mut self, sound_id: &str) {
+        if !self.editor.as_ref().is_some_and(|(id, _)| id == sound_id) {
+            self.editor = Some((sound_id.to_string(), None));
+        }
+    }
+
+    /// Fills the slot with `full` only while the editor is open on this sound; a decode that
+    /// lands after close is dropped.
     pub fn set_editor(&mut self, sound_id: &str, full: DecodedBuffer) {
-        self.editor = Some((sound_id.to_string(), full));
+        if let Some((_, slot)) = self.editor.as_mut().filter(|(id, _)| id == sound_id) {
+            *slot = Some(full);
+        }
     }
 
     pub fn close_editor(&mut self) {
@@ -352,9 +358,18 @@ impl<B: AudioBackend> Engine<B> {
         if !self.cache.is_empty() && !self.cache.has_room_for(buffer.byte_len()) {
             return false;
         }
+        self.insert_play_buffer(sound_id, tag, buffer);
+        true
+    }
+
+    /// Like `insert_cached` but evicts the oldest entries to make room; for a sound the user
+    /// just edited.
+    pub fn insert_play_buffer(&mut self, sound_id: &str, tag: (Option<Trim>, f32), buffer: DecodedBuffer) {
         self.cache.insert(sound_id, buffer);
         self.cut_for.insert(sound_id.to_string(), tag);
-        true
+        // Drop tags of buffers the insert evicted.
+        let cache = &self.cache;
+        self.cut_for.retain(|id, _| cache.contains(id));
     }
 
     /// Plays `buffer` on every output. A sound that is already playing is stopped first, so
@@ -460,7 +475,7 @@ impl<B: AudioBackend> Engine<B> {
 
     pub fn invalidate(&mut self, sound_id: &str) {
         self.uncache(sound_id);
-        if self.editor_buffer(sound_id).is_some() {
+        if self.editor.as_ref().is_some_and(|(id, _)| id == sound_id) {
             self.close_editor();
         }
     }
@@ -1093,6 +1108,8 @@ mod tests {
         let gone = Path::new("Z:/gone.wav");
         let mut e = engine(speakers_only(), 1.0);
         assert!(e.editor_buffer("a").is_none());
+        e.open_editor("a");
+        assert!(e.editor_buffer("a").is_none(), "open but not yet filled");
         e.set_editor("a", full.clone());
         assert!(Arc::ptr_eq(&e.editor_buffer("a").unwrap().samples, &full.samples));
         assert!(e.editor_buffer("b").is_none(), "the slot holds one sound");
@@ -1102,10 +1119,51 @@ mod tests {
         assert!(matches!(e.play_file("b", 1.0, gone, None, 0.0), Err(AudioError::Io(_))), "other sounds still decode");
         e.close_editor();
         assert!(e.editor_buffer("a").is_none(), "close_editor frees the slot");
+        e.open_editor("a");
         e.set_editor("a", full);
         e.invalidate("a");
         assert!(e.editor_buffer("a").is_none(), "invalidate frees the slot too");
         assert!(!e.is_cached("a"));
+    }
+
+    #[test]
+    fn a_decode_that_lands_after_close_is_dropped() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 4410);
+        let full = decode_file(&p).unwrap();
+        let mut e = engine(speakers_only(), 1.0);
+        e.open_editor("a");
+        e.close_editor();
+        e.set_editor("a", full.clone());
+        assert!(e.editor_buffer("a").is_none());
+        e.open_editor("a");
+        e.set_editor("b", full.clone());
+        assert!(e.editor_buffer("b").is_none(), "other id ignored");
+        assert!(e.editor_buffer("a").is_none(), "and the open slot stays empty");
+        e.set_editor("a", full);
+        e.open_editor("a");
+        assert!(e.editor_buffer("a").is_some(), "reopening on the same id keeps the fill");
+        e.invalidate("a");
+        e.open_editor("a");
+        e.invalidate("a");
+        e.set_editor("a", decode_file(&p).unwrap());
+        assert!(e.editor_buffer("a").is_none(), "invalidate closes an unfilled slot too");
+    }
+
+    #[test]
+    fn insert_play_buffer_evicts_the_oldest_and_its_tag() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 4410);
+        let buf = decode_file(&p).unwrap();
+        let mut e = Engine::new(FakeBackend::new(&["Speakers"]), speakers_only(), 1.0, buf.byte_len());
+        assert!(e.insert_cached("a", (None, 0.0), buf.clone()));
+        e.insert_play_buffer("b", (trim(0.0, 0.05), 0.5), buf);
+        assert!(!e.is_cached("a"));
+        assert!(e.is_cached("b"));
+        assert_eq!(e.cut_for.keys().collect::<Vec<_>>(), vec!["b"]);
+        assert_eq!(e.cached_tag("b"), Some((trim(0.0, 0.05), 0.5)));
     }
 
     #[test]

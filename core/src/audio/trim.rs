@@ -37,14 +37,6 @@ pub fn apply_trim(buffer: &DecodedBuffer, trim: Option<Trim>) -> DecodedBuffer {
     }
 }
 
-/// Length in seconds of what `trim` keeps of `buffer`, without slicing.
-pub fn trimmed_duration(buffer: &DecodedBuffer, trim: Option<Trim>) -> f32 {
-    match trim_frames(buffer, trim) {
-        None => buffer.duration_secs(),
-        Some((start, end)) => (end - start) as f32 / buffer.sample_rate.max(1) as f32,
-    }
-}
-
 /// `buckets` peaks: per bucket the largest absolute sample over all channels, normalized so the
 /// loudest bucket is 1.0. Silence stays all zeros; buckets past a very short clip's end are 0.
 pub fn waveform(buffer: &DecodedBuffer, buckets: usize) -> Vec<f32> {
@@ -91,7 +83,6 @@ mod tests {
         assert_eq!(t.sample_rate, 10);
         assert_eq!(*t.samples, vec![3, -3, 4, -4, 5, -5, 6, -6, 7, -7]);
         assert!((t.duration_secs() - 0.5).abs() < 1e-6);
-        assert!((trimmed_duration(&b, trim(0.3, 0.8)) - 0.5).abs() < 1e-6);
     }
 
     #[test]
@@ -109,7 +100,6 @@ mod tests {
         assert!(Arc::ptr_eq(&apply_trim(&b, None).samples, &b.samples));
         assert!(Arc::ptr_eq(&apply_trim(&b, trim(0.0, 2.0)).samples, &b.samples));
         assert!(Arc::ptr_eq(&apply_trim(&b, trim(0.0, 30.0)).samples, &b.samples));
-        assert_eq!(trimmed_duration(&b, None), b.duration_secs());
     }
 
     #[test]

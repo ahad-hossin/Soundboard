@@ -22,7 +22,8 @@ pub fn decode_file(path: &Path) -> Result<DecodedBuffer, AudioError> {
         .map_err(|e| AudioError::Decode(format!("{}: {e}", path.display())))?;
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
-    let samples: Vec<i16> = decoder.collect();
+    let mut samples: Vec<i16> = decoder.collect();
+    samples.shrink_to_fit(); // mp3 reports no size hint, so collect leaves up to 2x spare capacity
     if samples.is_empty() {
         return Err(AudioError::Decode(format!("{}: no audio data", path.display())));
     }
@@ -48,6 +49,15 @@ mod tests {
         // frame 60 of the test sawtooth: ((60 % 100) - 50) * 100, written to both channels by hound
         assert_eq!(b.samples[120], 1000);
         assert!((crate::audio::backend::to_f32(b.samples[120]) - 1000.0 / 32768.0).abs() <= 1.0 / 32768.0);
+    }
+
+    #[test]
+    fn decoded_samples_hold_no_spare_capacity() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 1000);
+        let b = decode_file(&p).unwrap();
+        assert_eq!(b.samples.capacity(), b.samples.len());
     }
 
     #[test]
