@@ -59,7 +59,8 @@ Three small features:
 2. Find yt-dlp and ffmpeg.
 3. In a fresh temp dir, run with no console window (`CREATE_NO_WINDOW`) and a 3-minute timeout:
    `yt-dlp --no-playlist -x --audio-format mp3 --ffmpeg-location <ffmpeg dir>
-   --match-filter "duration<=600" --no-progress -o "<tmp>/%(title).80B.%(ext)s" <url>`.
+   --match-filter "duration<=?600" --no-progress -o "<tmp>/%(title).80B.%(ext)s" <url>`. Media with unknown duration (live streams, some
+   Instagram/Facebook posts) passes the filter and is bounded only by the 3-minute timeout.
    Args are passed as a vector, never through a shell.
 4. Failure (non-zero exit or no `.mp3` produced): if the tool came from winget, run
    `winget upgrade -e --id yt-dlp.yt-dlp` once (no window, 2-minute timeout) and retry step 3
@@ -71,6 +72,8 @@ Three small features:
    emit state. The temp dir is deleted in every case.
 
 The 10-minute cap exists because sounds are fully decoded into memory (1 hour ≈ 1.3 GB).
+The decode cache was raised from 200 MB to 400 MB for this reason: a 10-minute 48 kHz stereo
+sound decodes to about 230 MB and must fit next to the other sounds.
 
 ### UI
 

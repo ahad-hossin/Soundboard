@@ -78,7 +78,7 @@ Download the latest installer from the
   `winget upgrade yt-dlp.yt-dlp`.
 
 **Bass boost and volume**
-- Right-click a tile and choose Bass boost: 0 to 100%, applied from the next
+- Right-click a tile and choose "Bass boost…": 0 to 100%, applied from the next
   play. The file is untouched.
 - Per-sound volume goes up to 200% for quiet clips; above 100% a soft limiter
   prevents harsh clipping. Master volume stays at 100% at most.
