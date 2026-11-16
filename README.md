@@ -48,6 +48,16 @@ Download the latest installer from the
 - Drag tiles to reorder. Rename, change color or image, set hotkey, delete
   from the right-click menu.
 
+**Folders**
+- Group sounds into folders. Folders show as tiles at the top of the grid with
+  a count and a preview of their sounds' colors; click one to open it, Back to
+  return.
+- Right-click a sound and choose Move to folder. Ctrl+click several sounds to
+  move them all at once from the bar above the grid; Esc clears the selection.
+- Deleting a folder keeps its sounds; they move back to the top level.
+- Hotkeys and Stop All work no matter which folder is open. The phone remote
+  shows the same folders.
+
 **Trim audio**
 - Right-click a tile and choose Trim audio: a waveform editor with drag
   handles, exact start and end times, and Play selection.
