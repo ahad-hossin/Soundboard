@@ -1,7 +1,10 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
 use thiserror::Error;
+
+use crate::config::Trim;
 
 /// Opaque id for one playing sink on the backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +84,9 @@ pub trait AudioBackend: Send + Sync {
     fn devices(&self) -> Vec<DeviceInfo>;
     /// Start playing `buffer` on `target` at linear `gain`. Returns a handle for later control.
     fn play(&self, target: &DeviceTarget, buffer: &DecodedBuffer, gain: f32) -> Result<SinkHandle, AudioError>;
+    /// Like `play`, but decodes `path` while it plays (the `trim` range, bass-boosted by `bass`)
+    /// instead of holding it in memory. The handle works like one from `play`.
+    fn play_stream(&self, target: &DeviceTarget, path: &Path, trim: Option<Trim>, bass: f32, gain: f32) -> Result<SinkHandle, AudioError>;
     fn stop(&self, handle: SinkHandle);
     fn set_gain(&self, handle: SinkHandle, gain: f32);
     /// True once the sink has drained (or never existed).

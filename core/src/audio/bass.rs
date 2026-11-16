@@ -9,27 +9,53 @@ const MAX_BOOST_DB: f64 = 18.0;
 /// saturation drive; the result is scaled down if needed so its peak is at most 1.0.
 /// Strength 0 (or non-finite) returns `buffer` itself, sharing its samples.
 pub fn bass_boost(buffer: &DecodedBuffer, strength: f32) -> DecodedBuffer {
-    let strength = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
-    if strength == 0.0 {
+    let Some(mut filter) = BassFilter::new(buffer.channels, buffer.sample_rate, strength) else {
         return buffer.clone();
-    }
-    let channels = buffer.channels.max(1) as usize;
-    let coeffs = low_shelf(buffer.sample_rate.max(1) as f64, MAX_BOOST_DB * strength as f64);
-    let drive = 1.0 + 3.0 * strength;
-    let norm = drive.tanh();
-    let mut state = vec![[0.0f64; 4]; channels]; // x1, x2, y1, y2 per channel
-    let mut out: Vec<f32> = buffer.samples.iter().enumerate().map(|(i, &x)| {
-        let st = &mut state[i % channels];
-        let x = to_f32(x) as f64;
-        let y = coeffs[0] * x + coeffs[1] * st[0] + coeffs[2] * st[1] - coeffs[3] * st[2] - coeffs[4] * st[3];
-        *st = [x, st[0], y, st[2]];
-        (drive * y as f32).tanh() / norm
-    }).collect();
+    };
+    let mut out: Vec<f32> = buffer.samples.iter().map(|&x| filter.process(to_f32(x))).collect();
     let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     if peak > 1.0 {
         out.iter_mut().for_each(|s| *s /= peak);
     }
     DecodedBuffer::new(buffer.channels, buffer.sample_rate, out)
+}
+
+/// The boost as a stream over interleaved samples: shelf biquad plus `tanh` saturation, one
+/// filter state per channel. Output can exceed 1.0; callers normalize or limit it.
+pub struct BassFilter {
+    coeffs: [f64; 5],
+    drive: f32,
+    norm: f32,
+    state: Vec<[f64; 4]>, // x1, x2, y1, y2 per channel
+    channel: usize,
+}
+
+impl BassFilter {
+    /// None when `strength` (clamped to 0..=1) is 0 or non-finite: nothing to do.
+    pub fn new(channels: u16, sample_rate: u32, strength: f32) -> Option<Self> {
+        let strength = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
+        if strength == 0.0 {
+            return None;
+        }
+        let drive = 1.0 + 3.0 * strength;
+        Some(Self {
+            coeffs: low_shelf(sample_rate.max(1) as f64, MAX_BOOST_DB * strength as f64),
+            drive,
+            norm: drive.tanh(),
+            state: vec![[0.0; 4]; channels.max(1) as usize],
+            channel: 0,
+        })
+    }
+
+    pub fn process(&mut self, sample: f32) -> f32 {
+        let c = &self.coeffs;
+        let st = &mut self.state[self.channel];
+        let x = sample as f64;
+        let y = c[0] * x + c[1] * st[0] + c[2] * st[1] - c[3] * st[2] - c[4] * st[3];
+        *st = [x, st[0], y, st[2]];
+        self.channel = (self.channel + 1) % self.state.len();
+        (self.drive * y as f32).tanh() / self.norm
+    }
 }
 
 /// RBJ cookbook low shelf (slope 1), normalized: [b0, b1, b2, a1, a2].
@@ -68,6 +94,29 @@ mod tests {
         let skip = b.sample_rate as usize / 10 * b.channels as usize;
         let s = &b.samples[skip..];
         (s.iter().map(|&x| to_f32(x).powi(2)).sum::<f32>() / s.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn filter_matches_the_old_buffer_loop() {
+        let b = sine(70.0, 0.8, 2);
+        let strength = 0.7f32;
+        // The loop bass_boost ran before BassFilter existed, without the normalization.
+        let coeffs = low_shelf(44100.0, MAX_BOOST_DB * strength as f64);
+        let drive = 1.0 + 3.0 * strength;
+        let norm = drive.tanh();
+        let mut state = vec![[0.0f64; 4]; 2];
+        let old: Vec<f32> = b.samples.iter().enumerate().map(|(i, &x)| {
+            let st = &mut state[i % 2];
+            let x = to_f32(x) as f64;
+            let y = coeffs[0] * x + coeffs[1] * st[0] + coeffs[2] * st[1] - coeffs[3] * st[2] - coeffs[4] * st[3];
+            *st = [x, st[0], y, st[2]];
+            (drive * y as f32).tanh() / norm
+        }).collect();
+        let mut f = BassFilter::new(2, 44100, strength).unwrap();
+        let new: Vec<f32> = b.samples.iter().map(|&x| f.process(to_f32(x))).collect();
+        assert_eq!(new, old);
+        assert!(BassFilter::new(2, 44100, 0.0).is_none());
+        assert!(BassFilter::new(2, 44100, f32::NAN).is_none());
     }
 
     #[test]

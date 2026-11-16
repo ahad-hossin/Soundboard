@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+use crate::config::Trim;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     Play { handle: SinkHandle, target: DeviceTarget, gain: f32, samples: usize },
+    PlayStream { handle: SinkHandle, target: DeviceTarget, path: PathBuf, trim: Option<Trim>, bass: f32, gain: f32 },
     Stop(SinkHandle),
     SetGain(SinkHandle, f32),
     Reset,
@@ -67,12 +70,12 @@ impl FakeBackend {
         self.calls.lock().unwrap().clone()
     }
 
-    /// Handles in play order.
+    /// Handles in play order, buffered and streamed.
     pub fn handles(&self) -> Vec<SinkHandle> {
         self.calls()
             .into_iter()
             .filter_map(|c| match c {
-                Call::Play { handle, .. } => Some(handle),
+                Call::Play { handle, .. } | Call::PlayStream { handle, .. } => Some(handle),
                 _ => None,
             })
             .collect()
@@ -91,6 +94,19 @@ impl FakeBackend {
         self.inputs.lock().unwrap().push(DeviceInfo { name: name.to_string(), is_default: false });
     }
 
+    /// Checks `target` like a real device lookup, then records `call` under a new handle.
+    fn record_play(&self, target: &DeviceTarget, gain: f32, call: impl FnOnce(SinkHandle) -> Call) -> Result<SinkHandle, AudioError> {
+        if let DeviceTarget::Named(n) = target {
+            if !self.devices.iter().any(|d| &d.name == n) {
+                return Err(AudioError::DeviceNotFound(n.clone()));
+            }
+        }
+        let handle = SinkHandle(self.next.fetch_add(1, Ordering::SeqCst));
+        self.calls.lock().unwrap().push(call(handle));
+        self.gains.lock().unwrap().insert(handle, gain);
+        Ok(handle)
+    }
+
     /// Simulates the passthrough dying on its own (output stream dropped).
     pub fn kill_passthrough(&self) {
         self.passthrough.store(false, Ordering::SeqCst);
@@ -103,20 +119,23 @@ impl AudioBackend for FakeBackend {
     }
 
     fn play(&self, target: &DeviceTarget, buffer: &DecodedBuffer, gain: f32) -> Result<SinkHandle, AudioError> {
-        if let DeviceTarget::Named(n) = target {
-            if !self.devices.iter().any(|d| &d.name == n) {
-                return Err(AudioError::DeviceNotFound(n.clone()));
-            }
-        }
-        let handle = SinkHandle(self.next.fetch_add(1, Ordering::SeqCst));
-        self.calls.lock().unwrap().push(Call::Play {
+        self.record_play(target, gain, |handle| Call::Play {
             handle,
             target: target.clone(),
             gain,
             samples: buffer.samples.len(),
-        });
-        self.gains.lock().unwrap().insert(handle, gain);
-        Ok(handle)
+        })
+    }
+
+    fn play_stream(&self, target: &DeviceTarget, path: &Path, trim: Option<Trim>, bass: f32, gain: f32) -> Result<SinkHandle, AudioError> {
+        self.record_play(target, gain, |handle| Call::PlayStream {
+            handle,
+            target: target.clone(),
+            path: path.to_path_buf(),
+            trim,
+            bass,
+            gain,
+        })
     }
 
     fn stop(&self, handle: SinkHandle) {
@@ -207,6 +226,28 @@ mod tests {
         assert_eq!(f.calls().len(), 3);
         assert!(f.devices()[0].is_default);
         assert!(f.input_devices().is_empty(), "new() has no inputs");
+    }
+
+    #[test]
+    fn fake_records_streams_and_their_handles() {
+        let f = FakeBackend::new(&["Speakers"]);
+        let trim = Some(Trim { start_secs: 1.0, end_secs: 40.0 });
+        let h = f.play_stream(&DeviceTarget::Default, Path::new("long.mp3"), trim, 0.5, 0.75).unwrap();
+        assert_eq!(
+            f.calls(),
+            vec![Call::PlayStream {
+                handle: h,
+                target: DeviceTarget::Default,
+                path: PathBuf::from("long.mp3"),
+                trim,
+                bass: 0.5,
+                gain: 0.75,
+            }]
+        );
+        assert_eq!(f.handles(), vec![h]);
+        assert_eq!(f.gain(h), Some(0.75));
+        let err = f.play_stream(&DeviceTarget::Named("Ghost".into()), Path::new("long.mp3"), None, 0.0, 1.0);
+        assert!(matches!(err, Err(AudioError::DeviceNotFound(_))));
     }
 
     #[test]

@@ -30,6 +30,13 @@ pub fn decode_file(path: &Path) -> Result<DecodedBuffer, AudioError> {
     Ok(DecodedBuffer::from_i16(channels, sample_rate, samples))
 }
 
+/// The file's length from its header, without decoding. None when it cannot be opened or the
+/// format does not say (minimp3-era mp3s, some streams).
+pub fn probe_secs(path: &Path) -> Option<f32> {
+    let decoder = Decoder::new(BufReader::new(File::open(path).ok()?)).ok()?;
+    decoder.total_duration().map(|d| d.as_secs_f32())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +65,16 @@ mod tests {
         write_test_wav(&p, 1000);
         let b = decode_file(&p).unwrap();
         assert_eq!(b.samples.capacity(), b.samples.len());
+    }
+
+    #[test]
+    fn probe_reads_the_length_without_decoding() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        write_test_wav(&p, 44100);
+        let secs = probe_secs(&p).unwrap();
+        assert!((secs - 1.0).abs() < 0.01, "{secs}");
+        assert_eq!(probe_secs(Path::new("Z:/nope/missing.wav")), None);
     }
 
     #[test]

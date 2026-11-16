@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -9,9 +12,11 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{FromSample, SampleFormat, SizedSample};
-use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 use super::backend::{to_f32, AudioBackend, AudioError, DecodedBuffer, DeviceInfo, DeviceTarget, SinkHandle};
+use super::bass::BassFilter;
+use crate::config::Trim;
 #[cfg(windows)]
 use super::exclusive::ExclusiveOutput;
 
@@ -41,18 +46,16 @@ fn soft_limit(x: f32) -> f32 {
 }
 
 /// Zero-copy rodio source over a cached decoded buffer: every sink shares the same `Arc`.
-/// Applies a live gain (f32 bits), soft-limited when above unity.
 struct SharedSource {
     samples: Arc<Vec<i16>>,
-    gain: Arc<AtomicU32>,
     pos: usize,
     channels: u16,
     sample_rate: u32,
 }
 
 impl SharedSource {
-    fn new(buffer: &DecodedBuffer, gain: Arc<AtomicU32>) -> Self {
-        Self { samples: Arc::clone(&buffer.samples), gain, pos: 0, channels: buffer.channels, sample_rate: buffer.sample_rate }
+    fn new(buffer: &DecodedBuffer) -> Self {
+        Self { samples: Arc::clone(&buffer.samples), pos: 0, channels: buffer.channels, sample_rate: buffer.sample_rate }
     }
 }
 
@@ -62,9 +65,7 @@ impl Iterator for SharedSource {
     fn next(&mut self) -> Option<f32> {
         let s = to_f32(self.samples.get(self.pos).copied()?);
         self.pos += 1;
-        let g = f32::from_bits(self.gain.load(Ordering::Relaxed));
-        // At or below unity the output is exactly what it was before boost existed.
-        Some(if g > 1.0 { soft_limit(s * g) } else { s * g })
+        Some(s)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -91,6 +92,70 @@ impl Source for SharedSource {
         let rate = u64::from(self.sample_rate.max(1));
         Some(Duration::from_secs(frames / rate) + Duration::from_nanos((frames % rate) * 1_000_000_000 / rate))
     }
+}
+
+/// The last stage of every played sound: a live gain (f32 bits), soft-limited when above unity.
+/// A streamed sound's bass boost runs here first, soft-limited since its peak is unknown.
+struct GainStage<S> {
+    inner: S,
+    gain: Arc<AtomicU32>,
+    bass: Option<BassFilter>,
+}
+
+impl<S: Source<Item = f32>> GainStage<S> {
+    fn new(inner: S, gain: Arc<AtomicU32>, bass: Option<BassFilter>) -> Self {
+        Self { inner, gain, bass }
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for GainStage<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let mut s = self.inner.next()?;
+        if let Some(bass) = &mut self.bass {
+            s = soft_limit(bass.process(s));
+        }
+        let g = f32::from_bits(self.gain.load(Ordering::Relaxed));
+        // At or below unity the output is exactly what it was before boost existed.
+        Some(if g > 1.0 { soft_limit(s * g) } else { s * g })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for GainStage<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+/// `path` decoded as it plays: the `trim` range, bass-boosted, at the live `gain`.
+fn stream_source(path: &Path, trim: Option<Trim>, bass: f32, gain: Arc<AtomicU32>) -> Result<impl Source<Item = f32>, AudioError> {
+    let mut decoder = Decoder::new(BufReader::new(File::open(path)?))
+        .map_err(|e| AudioError::Decode(format!("{}: {e}", path.display())))?;
+    // try_from: a malformed trim must not panic the audio thread.
+    let start = trim.and_then(|t| Duration::try_from_secs_f32(t.start_secs).ok()).unwrap_or_default();
+    let len = trim.and_then(|t| Duration::try_from_secs_f32(t.end_secs - t.start_secs).ok()).unwrap_or(Duration::MAX);
+    // Formats that cannot seek decode and drop everything before the start instead.
+    let skip = if !start.is_zero() && decoder.try_seek(start).is_err() { start } else { Duration::ZERO };
+    let source = decoder.convert_samples::<f32>().skip_duration(skip).take_duration(len);
+    let bass = BassFilter::new(source.channels(), source.sample_rate(), bass);
+    Ok(GainStage::new(source, gain, bass))
 }
 
 /// Live microphone samples for the virtual mic sink, read from the ring the input callback fills.
@@ -259,6 +324,14 @@ enum Cmd {
     PassthroughActive(Sender<bool>),
     SetExclusiveOutput(Option<DeviceTarget>),
     Play { target: DeviceTarget, buffer: DecodedBuffer, gain: f32, reply: Sender<Result<SinkHandle, AudioError>> },
+    PlayStream {
+        target: DeviceTarget,
+        path: PathBuf,
+        trim: Option<Trim>,
+        bass: f32,
+        gain: f32,
+        reply: Sender<Result<SinkHandle, AudioError>>,
+    },
     Stop(SinkHandle),
     SetGain(SinkHandle, f32),
     IsFinished(SinkHandle, Sender<bool>),
@@ -308,6 +381,14 @@ impl AudioBackend for RodioBackend {
         let (tx, rx) = mpsc::channel();
         self.tx
             .send(Cmd::Play { target: target.clone(), buffer: buffer.clone(), gain, reply: tx })
+            .map_err(|_| Self::gone())?;
+        rx.recv().map_err(|_| Self::gone())?
+    }
+
+    fn play_stream(&self, target: &DeviceTarget, path: &Path, trim: Option<Trim>, bass: f32, gain: f32) -> Result<SinkHandle, AudioError> {
+        let (tx, rx) = mpsc::channel();
+        self.tx
+            .send(Cmd::PlayStream { target: target.clone(), path: path.to_path_buf(), trim, bass, gain, reply: tx })
             .map_err(|_| Self::gone())?;
         rx.recv().map_err(|_| Self::gone())?
     }
@@ -436,7 +517,14 @@ fn audio_thread(rx: Receiver<Cmd>, exclusive_fallback: Arc<Mutex<Option<String>>
                 }
             }
             Cmd::Play { target, buffer, gain, reply } => {
-                let _ = reply.send(st.play(&target, &buffer, gain));
+                let g = Arc::new(AtomicU32::new(gain.to_bits()));
+                let source = GainStage::new(SharedSource::new(&buffer), Arc::clone(&g), None);
+                let _ = reply.send(st.play(&target, source, g));
+            }
+            Cmd::PlayStream { target, path, trim, bass, gain, reply } => {
+                let g = Arc::new(AtomicU32::new(gain.to_bits()));
+                let played = stream_source(&path, trim, bass, Arc::clone(&g)).and_then(|s| st.play(&target, s, g));
+                let _ = reply.send(played);
             }
             Cmd::Stop(h) => {
                 if let Some(s) = st.remove_sink(h) {
@@ -660,10 +748,10 @@ impl AudioThread {
         Ok(DeviceStream::Shared { _stream: stream, handle })
     }
 
-    fn play(&mut self, target: &DeviceTarget, buffer: &DecodedBuffer, gain: f32) -> Result<SinkHandle, AudioError> {
+    /// Plays `source` on a new sink on `target`; `g` is its live gain, kept for `SetGain`.
+    fn play(&mut self, target: &DeviceTarget, source: impl Source<Item = f32> + Send + 'static, g: Arc<AtomicU32>) -> Result<SinkHandle, AudioError> {
         let sink = self.sink_for(target)?;
-        let g = Arc::new(AtomicU32::new(gain.to_bits()));
-        sink.append(SharedSource::new(buffer, Arc::clone(&g)));
+        sink.append(source);
         let h = SinkHandle(self.next);
         self.next += 1;
         self.sinks.insert(h, sink);
@@ -699,7 +787,7 @@ mod tests {
     #[test]
     fn shared_source_yields_the_buffer_without_copying() {
         let buffer = DecodedBuffer::from_i16(2, 4, vec![3277, -6554, 9830, -13107, 16384, -19661, 22938, -26214, 29491, -32768]);
-        let src = SharedSource::new(&buffer, Arc::new(AtomicU32::new(1.0f32.to_bits())));
+        let src = SharedSource::new(&buffer);
         assert!(Arc::ptr_eq(&src.samples, &buffer.samples), "shares the cached Arc");
         assert_eq!(src.channels(), 2);
         assert_eq!(src.sample_rate(), 4);
@@ -727,12 +815,67 @@ mod tests {
     fn shared_source_applies_gain_and_limits_only_above_one() {
         let buffer = DecodedBuffer::from_i16(1, 1000, vec![16384, 31130, -31130]);
         let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let unity: Vec<f32> = SharedSource::new(&buffer, Arc::clone(&gain)).collect();
+        let unity: Vec<f32> = GainStage::new(SharedSource::new(&buffer), Arc::clone(&gain), None).collect();
         assert_eq!(unity, vec![0.5, to_f32(31130), -to_f32(31130)], "gain 1 is bit-identical");
         gain.store(2.0f32.to_bits(), Ordering::Relaxed);
-        let loud: Vec<f32> = SharedSource::new(&buffer, gain).collect();
+        let loud: Vec<f32> = GainStage::new(SharedSource::new(&buffer), gain, None).collect();
         assert_eq!(loud[0], soft_limit(1.0));
         assert!(loud.iter().all(|s| s.abs() < 1.0));
+    }
+
+    fn test_wav(frames: u32) -> (tempfile::TempDir, std::path::PathBuf, Vec<f32>) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("clip.wav");
+        crate::test_util::write_test_wav(&p, frames);
+        let decoded = crate::audio::decode::decode_file(&p).unwrap().samples.iter().map(|&s| to_f32(s)).collect();
+        (dir, p, decoded)
+    }
+
+    fn unity() -> Arc<AtomicU32> {
+        Arc::new(AtomicU32::new(1.0f32.to_bits()))
+    }
+
+    #[test]
+    fn stream_source_yields_the_whole_file_untrimmed() {
+        let (_dir, p, decoded) = test_wav(44100);
+        let src = stream_source(&p, None, 0.0, unity()).unwrap();
+        assert_eq!((src.channels(), src.sample_rate()), (2, 44100));
+        assert_eq!(src.collect::<Vec<f32>>(), decoded);
+    }
+
+    #[test]
+    fn stream_source_plays_only_the_trim_range() {
+        let (_dir, p, decoded) = test_wav(44100);
+        let trim = Trim { start_secs: 0.25, end_secs: 0.5 };
+        let out: Vec<f32> = stream_source(&p, Some(trim), 0.0, unity()).unwrap().collect();
+        let start = 11025 * 2;
+        assert!(out.len().abs_diff(11025 * 2) <= 2, "{} samples", out.len());
+        assert_eq!(out[..], decoded[start..start + out.len()]);
+    }
+
+    #[test]
+    fn stream_source_limits_and_follows_live_gain() {
+        let (_dir, p, _) = test_wav(4410);
+        // The test sawtooth peaks at 0.15: x8 drives it well past the knee.
+        let gain = Arc::new(AtomicU32::new(8.0f32.to_bits()));
+        let loud: Vec<f32> = stream_source(&p, None, 0.0, Arc::clone(&gain)).unwrap().collect();
+        assert!(loud.iter().any(|s| s.abs() > 0.9) && loud.iter().all(|s| s.abs() < 1.0));
+        gain.store(2.0f32.to_bits(), Ordering::Relaxed);
+        let bassy: Vec<f32> = stream_source(&p, None, 1.0, Arc::clone(&gain)).unwrap().collect();
+        assert!(bassy.iter().all(|s| s.abs() < 1.0));
+        let mut src = stream_source(&p, None, 0.0, Arc::clone(&gain)).unwrap();
+        let before = src.by_ref().take(100).last().unwrap();
+        gain.store(0.0f32.to_bits(), Ordering::Relaxed);
+        assert!(before != 0.0 && src.all(|s| s == 0.0), "a gain change reaches a playing stream");
+    }
+
+    #[test]
+    fn stream_source_reports_bad_files() {
+        assert!(matches!(stream_source(Path::new("Z:/nope/missing.wav"), None, 0.0, unity()), Err(AudioError::Io(_))));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad.wav");
+        std::fs::write(&p, b"this is not audio at all").unwrap();
+        assert!(matches!(stream_source(&p, None, 0.0, unity()), Err(AudioError::Decode(_))));
     }
 
     #[test]
