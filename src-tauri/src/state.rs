@@ -10,7 +10,7 @@ use soundboard_core::audio::{DeviceInfo, Engine, Outputs, RodioBackend};
 use soundboard_core::config::{self, Config, Sound, Startup, Trim};
 use soundboard_core::library::Library;
 use soundboard_core::palette::PALETTE;
-use soundboard_core::remote::protocol::{RemoteSound, ServerMsg};
+use soundboard_core::remote::protocol::{RemoteFolder, RemoteSound, ServerMsg};
 use soundboard_core::remote::Hub;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -89,6 +89,14 @@ pub struct UiSound {
     pub duration_secs: Option<f32>,
     pub play_seq: u64,
     pub trim: Option<Trim>,
+    /// Folder id, or None for the top level.
+    pub folder: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct UiFolder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -118,6 +126,7 @@ pub struct UiState {
     pub startup: Startup,
     pub remote: UiRemote,
     pub sounds: Vec<UiSound>,
+    pub folders: Vec<UiFolder>,
     pub playing: Vec<String>,
     pub startup_notices: Vec<String>,
 }
@@ -317,9 +326,11 @@ impl App {
                         duration_secs: self.engine.cached_duration(&s.id, s.trim),
                         play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
                         trim: s.trim,
+                        folder: s.folder.clone(),
                     }
                 })
                 .collect(),
+            folders: self.config.folders.iter().map(|f| UiFolder { id: f.id.clone(), name: f.name.clone() }).collect(),
             playing: self.engine.playing(),
             startup_notices: self.startup_notices.clone(),
         }
@@ -341,8 +352,10 @@ impl App {
                     color: tile_color(s),
                     duration_secs: self.engine.cached_duration(&s.id, s.trim),
                     play_seq: self.play_seq.get(&s.id).copied().unwrap_or(0),
+                    folder: s.folder.clone(),
                 })
                 .collect(),
+            folders: self.config.folders.iter().map(|f| RemoteFolder { id: f.id.clone(), name: f.name.clone() }).collect(),
         }
     }
 }

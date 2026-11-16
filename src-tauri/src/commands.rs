@@ -106,7 +106,7 @@ pub struct AddOutcome {
 
 /// Imports each path; reports the rejected files and the new sound ids.
 #[tauri::command]
-pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<AddOutcome, String> {
+pub async fn add_sounds(paths: Vec<String>, folder: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<AddOutcome, String> {
     // Short lock just to learn where the library lives; the heavy import runs unlocked.
     // The current colors come along so new sounds get the least-used ones.
     let (root, mut used_colors) = {
@@ -139,7 +139,12 @@ pub async fn add_sounds(paths: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>)
     if !imported.is_empty() {
         {
             let mut a = lock(&ctx.shared);
-            a.config.sounds.extend(imported);
+            // A folder deleted while the import ran: the sounds land on the top level instead.
+            let folder = folder.filter(|f| a.config.folder(f).is_some());
+            a.config.sounds.extend(imported.into_iter().map(|mut s| {
+                s.folder = folder.clone();
+                s
+            }));
             a.mark_dirty();
             a.refresh_files();
         }
@@ -361,6 +366,52 @@ pub fn reorder_sounds(ids: Vec<String>, app: AppHandle, ctx: State<'_, Ctx>) -> 
             return Err("The sound list changed, try again".into());
         }
         a.config.sounds = reordered;
+        a.mark_dirty();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_folder(name: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<String, String> {
+    let id = mutate(&ctx, |a| {
+        let id = a.config.create_folder(&name);
+        a.mark_dirty();
+        Ok(id)
+    })?;
+    emit_state(&app, &ctx);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn rename_folder(id: String, name: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        a.config.rename_folder(&id, &name)?;
+        a.mark_dirty();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+/// The folder's sounds move to the top level; no sound is deleted.
+#[tauri::command]
+pub fn delete_folder(id: String, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        a.config.delete_folder(&id)?;
+        a.mark_dirty();
+        Ok(())
+    })?;
+    emit_state(&app, &ctx);
+    Ok(())
+}
+
+/// Moves any number of sounds in one save. `folder` None is the top level.
+#[tauri::command]
+pub fn move_sounds(ids: Vec<String>, folder: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<(), String> {
+    mutate(&ctx, |a| {
+        a.config.move_sounds(&ids, folder.as_deref())?;
         a.mark_dirty();
         Ok(())
     })?;
