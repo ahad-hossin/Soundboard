@@ -52,6 +52,7 @@ Download the latest installer from the
 - Group sounds into folders. Folders show as tiles at the top of the grid with
   a count and a preview of their sounds' colors; click one to open it, Back to
   return.
+- The dashed Folder tile creates a folder; right-click a folder to rename or delete it. Sounds you add while a folder is open go into it.
 - Right-click a sound and choose Move to folder. Ctrl+click several sounds to
   move them all at once from the bar above the grid; Esc clears the selection.
 - Deleting a folder keeps its sounds; they move back to the top level.

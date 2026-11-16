@@ -58,6 +58,7 @@ describe("TileGrid", () => {
     fireEvent.click(screen.getByRole("button", { name: "C" }), { ctrlKey: true });
     expect(play).not.toHaveBeenCalled();
     expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "A, selected" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move to folder…" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Memes" }));
     expect(moveTo).toHaveBeenCalledWith(["a", "c"], "f1");
@@ -75,7 +76,7 @@ describe("TileGrid", () => {
     setup(sounds, folders);
     fireEvent.click(screen.getByRole("button", { name: "A" }), { ctrlKey: true });
     fireEvent.click(screen.getByRole("button", { name: "C" }), { ctrlKey: true });
-    fireEvent.contextMenu(screen.getByRole("button", { name: "C" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "C, selected" }));
     expect(screen.getByRole("menuitem", { name: "Move 2 sounds to folder…" })).toBeInTheDocument();
   });
 

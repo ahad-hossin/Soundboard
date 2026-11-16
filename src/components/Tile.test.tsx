@@ -171,7 +171,7 @@ describe("Tile", () => {
 
   it("marks a selected tile", () => {
     render(tree(sound, false, vi.fn(), vi.fn(), { selected: true }));
-    expect(screen.getByRole("button", { name: "Airhorn" })).toHaveAttribute("data-selected", "true");
+    expect(screen.getByRole("button", { name: "Airhorn, selected" })).toHaveAttribute("data-selected", "true");
     expect(screen.getByText("✓")).toBeInTheDocument();
   });
 });

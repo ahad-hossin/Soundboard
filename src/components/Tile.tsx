@@ -34,7 +34,7 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu, selected
         {...listeners}
         onClick={(e) => (onToggleSelect && (e.ctrlKey || e.metaKey) ? onToggleSelect() : onPlay())}
         onContextMenu={onContextMenu}
-        aria-label={sound.name}
+        aria-label={selected ? `${sound.name}, selected` : sound.name}
         aria-pressed={playing}
         data-selected={selected || undefined}
         style={src ? undefined : tileDecoration(sound.id, sound.color)}

@@ -4,7 +4,7 @@ interface Props { count: number; onMove?: (e: MouseEvent<HTMLButtonElement>) => 
 
 export function SelectionBar({ count, onMove, onClear }: Props) {
   return (
-    <div role="toolbar" aria-label="Selection" className="mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-surface px-3">
+    <div role="group" aria-label="Selection" className="mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-surface px-3">
       <span className="tabular-nums">{count} selected</span>
       <div className="flex-1" />
       {onMove && <button type="button" className="btn" onClick={onMove}>Move to folder…</button>}
