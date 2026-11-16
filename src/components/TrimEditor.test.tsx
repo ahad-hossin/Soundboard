@@ -22,10 +22,12 @@ function wave(over: Partial<Waveform> = {}): Waveform {
 }
 
 async function open(mode: "edit" | "import" = "edit", w: Waveform = wave()) {
-  mocked.getWaveform.mockResolvedValue(w);
+  // Resolve a tick later, like the real IPC, so tests never depend on how fast the mock settles.
+  mocked.getWaveform.mockImplementation(() => new Promise((r) => setTimeout(() => r(w), 0)));
   const onClose = vi.fn();
   render(<TrimEditor sound={sound} mode={mode} onClose={onClose} />);
-  await screen.findByRole("button", { name: "Play selection" });
+  // The buttons already show while Loading…; the trim handles appear only once the waveform is in.
+  await screen.findByRole("slider", { name: "Trim start" });
   return onClose;
 }
 
