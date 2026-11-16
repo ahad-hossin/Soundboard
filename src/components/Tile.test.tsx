@@ -28,6 +28,12 @@ function renderTile(over: Partial<UiSound> = {}, playing = false, onPlay = vi.fn
 }
 
 describe("Tile", () => {
+  it("lets the volume slider go to 200%", () => {
+    renderTile({ volume: 1.5 });
+    expect(screen.getByLabelText(/volume/)).toHaveAttribute("max", "2");
+    expect(screen.getByText("150%")).toBeInTheDocument();
+  });
+
   it("shows name and shortened hotkey badge", () => {
     renderTile();
     expect(screen.getByText("Airhorn")).toBeInTheDocument();

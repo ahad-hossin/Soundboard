@@ -5,7 +5,7 @@ use super::backend::{AudioBackend, AudioError, DecodedBuffer, DeviceInfo, Device
 use super::cache::BufferCache;
 use super::decode::decode_file;
 use super::trim::{apply_trim, trimmed_duration};
-use crate::config::{Trim, MAX_MIC_GAIN};
+use crate::config::{Trim, MAX_MIC_GAIN, MAX_SOUND_VOLUME};
 
 pub const TEST_TONE_ID: &str = "__test_tone__";
 /// Hidden sound id of the trim editor's "Play selection"; never listed in `playing()`.
@@ -245,7 +245,7 @@ impl<B: AudioBackend> Engine<B> {
     }
 
     pub fn set_sound_volume(&mut self, sound_id: &str, v: f32) {
-        let v = v.clamp(0.0, 1.0);
+        let v = v.clamp(0.0, MAX_SOUND_VOLUME);
         let master = self.master;
         let backend = &self.backend;
         for a in self.active.iter_mut().filter(|a| a.sound_id == sound_id) {
@@ -351,7 +351,7 @@ impl<B: AudioBackend> Engine<B> {
         if sound_id != TEST_TONE_ID {
             self.stop_sound(sound_id);
         }
-        let sound_volume = sound_volume.clamp(0.0, 1.0);
+        let sound_volume = sound_volume.clamp(0.0, MAX_SOUND_VOLUME);
         let gain = sound_volume * self.master;
         let instance = self.next_instance;
         self.next_instance += 1;
@@ -538,6 +538,16 @@ mod tests {
         assert_eq!(play_targets(&e), vec![DeviceTarget::Named("Speakers".into())]);
         assert_eq!(out.sinks, 1);
         assert_eq!(out.fallbacks, vec!["Ghost".to_string()]);
+    }
+
+    #[test]
+    fn sound_volume_goes_past_one_but_not_past_max() {
+        let mut e = engine(both(), 0.5);
+        e.play_buffer("a", 1.8, &clip()).unwrap();
+        let h = e.active[0].handle;
+        assert!((e.backend().gain(h).unwrap() - 0.9).abs() < 1e-6);
+        e.set_sound_volume("a", 5.0);
+        assert!((e.backend().gain(h).unwrap() - 1.0).abs() < 1e-6, "clamped to 2.0 x 0.5");
     }
 
     #[test]

@@ -312,7 +312,7 @@ fn handle_client_msg(ctx: &AppCtx, text: &str) {
         Ok(ClientMsg::Play { id }) => ctx.handler.play(&id),
         Ok(ClientMsg::StopAll) => ctx.handler.stop_all(),
         Ok(ClientMsg::SetMasterVolume { value }) => ctx.handler.set_master_volume(value.clamp(0.0, 1.0)),
-        Ok(ClientMsg::SetSoundVolume { id, value }) => ctx.handler.set_sound_volume(&id, value.clamp(0.0, 1.0)),
+        Ok(ClientMsg::SetSoundVolume { id, value }) => ctx.handler.set_sound_volume(&id, value.clamp(0.0, crate::config::MAX_SOUND_VOLUME)),
         Err(e) => log::debug!("ignoring remote message {text:?}: {e}"),
     }
 }
@@ -355,7 +355,8 @@ mod tests {
         handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u1","value":0.4}"#);
         handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u2","value":7.0}"#);
         handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u3","value":-1.0}"#);
-        assert_eq!(*rec.0.lock().unwrap(), vec!["sound:u1:0.4", "sound:u2:1", "sound:u3:0"]);
+        handle_client_msg(&ctx, r#"{"type":"set_sound_volume","id":"u4","value":1.5}"#);
+        assert_eq!(*rec.0.lock().unwrap(), vec!["sound:u1:0.4", "sound:u2:2", "sound:u3:0", "sound:u4:1.5"]);
     }
 
     #[test]

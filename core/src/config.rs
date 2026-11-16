@@ -184,10 +184,13 @@ fn is_hex_color(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Clamps to 0..=1; a non-finite value (hand-edited file) becomes `fallback`.
-fn unit(v: f32, fallback: f32) -> f32 {
+/// Per-sound volume can boost a quiet clip up to 200%; master stays at most 100%.
+pub const MAX_SOUND_VOLUME: f32 = 2.0;
+
+/// Clamps to 0..=max; a non-finite value (hand-edited file) becomes `fallback`.
+fn clamp_or(v: f32, max: f32, fallback: f32) -> f32 {
     if v.is_finite() {
-        v.clamp(0.0, 1.0)
+        v.clamp(0.0, max)
     } else {
         fallback
     }
@@ -279,9 +282,9 @@ impl Config {
         if self.version > CONFIG_VERSION {
             log::warn!("config version {} is newer than this app ({CONFIG_VERSION}); unknown fields are ignored", self.version);
         }
-        self.master_volume = unit(self.master_volume, default_master());
+        self.master_volume = clamp_or(self.master_volume, 1.0, default_master());
         for s in &mut self.sounds {
-            s.volume = unit(s.volume, 1.0);
+            s.volume = clamp_or(s.volume, MAX_SOUND_VOLUME, 1.0);
             s.trim = s.trim.filter(Trim::is_valid);
         }
         self.assign_colors();
@@ -365,6 +368,17 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use crate::palette::PALETTE;
+
+    #[test]
+    fn sound_volume_keeps_up_to_200_percent() {
+        let mut cfg = Config::default();
+        for (id, v) in [("a", 1.5), ("b", 3.0), ("c", f32::NAN), ("d", -1.0)] {
+            cfg.sounds.push(Sound { id: id.into(), name: id.into(), file: format!("{id}.wav"), image: None, volume: v, hotkey: None, color: None, trim: None, folder: None });
+        }
+        let cfg = cfg.sanitize();
+        let vols: Vec<f32> = cfg.sounds.iter().map(|s| s.volume).collect();
+        assert_eq!(vols, vec![1.5, MAX_SOUND_VOLUME, 1.0, 0.0]);
+    }
 
     #[test]
     fn default_has_expected_values() {
@@ -511,7 +525,7 @@ mod tests {
         assert_eq!(c.version, 2, "newer version is kept, only warned about");
         assert_eq!(c.master_volume, 1.0);
         assert_eq!(c.sounds[0].volume, 0.0);
-        assert_eq!(c.sounds[1].volume, 1.0);
+        assert_eq!(c.sounds[1].volume, 1.7);
     }
 
     #[test]

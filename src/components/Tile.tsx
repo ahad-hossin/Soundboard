@@ -85,7 +85,7 @@ export function Tile({ sound, playing, onPlay, onVolume, onContextMenu, selected
         <input
           type="range"
           min={0}
-          max={1}
+          max={2}
           step={0.01}
           tabIndex={-1}
           {...volume}

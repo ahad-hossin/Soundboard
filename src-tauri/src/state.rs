@@ -214,7 +214,7 @@ impl App {
         let Some(s) = self.config.sound_mut(id) else {
             return false;
         };
-        let v = value.clamp(0.0, 1.0);
+        let v = value.clamp(0.0, soundboard_core::config::MAX_SOUND_VOLUME);
         s.volume = v;
         self.engine.set_sound_volume(id, v);
         self.mark_dirty();
