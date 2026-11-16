@@ -402,9 +402,22 @@ pub fn play_and_report(app: &AppHandle, id: &str) {
 /// play is instant. The work runs outside the App lock; the lock is taken only to look up the
 /// sound and to insert the result. `None` warms every sound in config order.
 pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
+    warm(shared, ids, false);
+}
+
+/// Warms a sound the user just edited. Unlike `spawn_warm` it may evict older buffers.
+pub fn spawn_rewarm(shared: Shared, id: String) {
+    warm(shared, Some(vec![id]), true);
+}
+
+/// One warm at a time, so a burst of bass edits does not decode in parallel.
+static WARMING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn warm(shared: Shared, ids: Option<Vec<String>>, evict: bool) {
     tauri::async_runtime::spawn_blocking(move || {
         let ids = ids.unwrap_or_else(|| lock(&shared).config.sounds.iter().map(|s| s.id.clone()).collect());
         for id in ids {
+            let _one = WARMING.lock().unwrap_or_else(|e| e.into_inner());
             let (path, trim, bass) = {
                 let a = lock(&shared);
                 match a.config.sound(&id) {
@@ -423,8 +436,12 @@ pub fn spawn_warm(shared: Shared, ids: Option<Vec<String>>) {
                 let mut a = lock(&shared);
                 // The sound may have been deleted, re-trimmed or played (and cached) meanwhile.
                 let unchanged = a.config.sound(&id).is_some_and(|s| s.trim == trim && s.bass == bass);
-                if unchanged && !a.engine.is_cached(&id) && !a.engine.insert_cached(&id, (trim, bass), play) {
-                    break; // cache full; warming never evicts
+                if unchanged && !a.engine.is_cached(&id) {
+                    if evict {
+                        a.engine.insert_play_buffer(&id, (trim, bass), play);
+                    } else if !a.engine.insert_cached(&id, (trim, bass), play) {
+                        break; // cache full; startup and import warming never evict
+                    }
                 }
             }
             std::thread::yield_now();

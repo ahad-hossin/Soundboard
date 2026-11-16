@@ -14,7 +14,7 @@ use soundboard_core::remote::auth;
 use tauri_plugin_autostart::ManagerExt;
 use tauri::{AppHandle, State};
 
-use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_warm, App, Ctx, UiState};
+use crate::state::{emit_state, emit_toast, lan_addresses, lock, spawn_rewarm, spawn_warm, App, Ctx, UiState};
 use crate::firewall::{self, FirewallState, FirewallStatus};
 use crate::{hotkeys_glue, remote_glue};
 
@@ -230,6 +230,7 @@ async fn full_buffer(ctx: &Ctx, id: &str) -> Result<(DecodedBuffer, Option<Trim>
 /// Peaks of the whole file for the trim editor, with its length and current trim.
 #[tauri::command]
 pub async fn get_waveform(id: String, ctx: State<'_, Ctx>) -> Result<Waveform, String> {
+    lock(&ctx.shared).engine.open_editor(&id);
     let (buffer, trim) = full_buffer(&ctx, &id).await?;
     tauri::async_runtime::spawn_blocking(move || Waveform {
         duration_secs: buffer.duration_secs(),
@@ -270,7 +271,7 @@ pub async fn set_trim(id: String, trim: Option<Trim>, app: AppHandle, ctx: State
         a.refresh_files();
         Ok(())
     })?;
-    spawn_warm(ctx.shared.clone(), Some(vec![id]));
+    spawn_rewarm(ctx.shared.clone(), id);
     emit_state(&app, &ctx);
     Ok(())
 }
@@ -285,7 +286,7 @@ pub fn set_bass(id: String, value: f32, app: AppHandle, ctx: State<'_, Ctx>) -> 
         a.mark_dirty();
         Ok(())
     })?;
-    spawn_warm(ctx.shared.clone(), Some(vec![id]));
+    spawn_rewarm(ctx.shared.clone(), id);
     emit_state(&app, &ctx);
     Ok(())
 }
