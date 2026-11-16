@@ -146,16 +146,22 @@ impl<S: Source<Item = f32>> Source for GainStage<S> {
 
 /// `path` decoded as it plays: the `trim` range, bass-boosted, at the live `gain`.
 fn stream_source(path: &Path, trim: Option<Trim>, bass: f32, gain: Arc<AtomicU32>) -> Result<impl Source<Item = f32>, AudioError> {
-    let mut decoder = Decoder::new(BufReader::new(File::open(path)?))
+    let decoder = Decoder::new(BufReader::new(File::open(path)?))
         .map_err(|e| AudioError::Decode(format!("{}: {e}", path.display())))?;
+    Ok(shape_stream(decoder, trim, bass, gain))
+}
+
+/// The `stream_source` pipeline after the file is open.
+fn shape_stream<S: Source<Item = i16>>(mut decoded: S, trim: Option<Trim>, bass: f32, gain: Arc<AtomicU32>) -> impl Source<Item = f32> {
     // try_from: a malformed trim must not panic the audio thread.
     let start = trim.and_then(|t| Duration::try_from_secs_f32(t.start_secs).ok()).unwrap_or_default();
     let len = trim.and_then(|t| Duration::try_from_secs_f32(t.end_secs - t.start_secs).ok()).unwrap_or(Duration::MAX);
-    // Formats that cannot seek decode and drop everything before the start instead.
-    let skip = if !start.is_zero() && decoder.try_seek(start).is_err() { start } else { Duration::ZERO };
-    let source = decoder.convert_samples::<f32>().skip_duration(skip).take_duration(len);
+    // shortcut: FLAC and Ogg cannot seek in rodio 0.20, so this decodes everything before the
+    // start on the audio thread; upgrade to a seekable decoder (rodio 0.21+ or own symphonia).
+    let skip = if !start.is_zero() && decoded.try_seek(start).is_err() { start } else { Duration::ZERO };
+    let source = decoded.convert_samples::<f32>().skip_duration(skip).take_duration(len);
     let bass = BassFilter::new(source.channels(), source.sample_rate(), bass);
-    Ok(GainStage::new(source, gain, bass))
+    GainStage::new(source, gain, bass)
 }
 
 /// Live microphone samples for the virtual mic sink, read from the ring the input callback fills.
@@ -847,10 +853,46 @@ mod tests {
     fn stream_source_plays_only_the_trim_range() {
         let (_dir, p, decoded) = test_wav(44100);
         let trim = Trim { start_secs: 0.25, end_secs: 0.5 };
-        let out: Vec<f32> = stream_source(&p, Some(trim), 0.0, unity()).unwrap().collect();
-        let start = 11025 * 2;
-        assert!(out.len().abs_diff(11025 * 2) <= 2, "{} samples", out.len());
-        assert_eq!(out[..], decoded[start..start + out.len()]);
+        let seeked: Vec<f32> = stream_source(&p, Some(trim), 0.0, unity()).unwrap().collect();
+        // The same range from a source that cannot seek goes through the skip fallback.
+        let buffer = crate::audio::decode::decode_file(&p).unwrap();
+        let mut no_seek = NoSeek(rodio::buffer::SamplesBuffer::new(2, 44100, buffer.samples.to_vec()));
+        assert!(no_seek.try_seek(Duration::from_millis(250)).is_err());
+        let skipped: Vec<f32> = shape_stream(no_seek, Some(trim), 0.0, unity()).collect();
+        for out in [seeked, skipped] {
+            let start = 11025 * 2;
+            assert!(out.len().abs_diff(11025 * 2) <= 2, "{} samples", out.len());
+            assert_eq!(out[..], decoded[start..start + out.len()]);
+        }
+    }
+
+    /// A source whose `try_seek` is the trait default: NotSupported.
+    struct NoSeek(rodio::buffer::SamplesBuffer<i16>);
+
+    impl Iterator for NoSeek {
+        type Item = i16;
+
+        fn next(&mut self) -> Option<i16> {
+            self.0.next()
+        }
+    }
+
+    impl Source for NoSeek {
+        fn current_frame_len(&self) -> Option<usize> {
+            self.0.current_frame_len()
+        }
+
+        fn channels(&self) -> u16 {
+            self.0.channels()
+        }
+
+        fn sample_rate(&self) -> u32 {
+            self.0.sample_rate()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            self.0.total_duration()
+        }
     }
 
     #[test]
