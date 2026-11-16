@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useStore } from "../lib/store";
 import { api } from "../lib/api";
+import { addFromLink } from "../lib/actions";
 import { TopBar } from "./TopBar";
 
 vi.mock("../lib/api", () => ({
@@ -11,7 +12,7 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../lib/actions", () => ({ pickAndAddSounds: vi.fn() }));
+vi.mock("../lib/actions", () => ({ pickAndAddSounds: vi.fn(), addFromLink: vi.fn() }));
 
 const base = {
   master_volume: 0.8,
@@ -29,7 +30,7 @@ describe("TopBar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const fn of Object.values(api)) (fn as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-    useStore.setState({ state: base, toasts: [] });
+    useStore.setState({ state: base, toasts: [], linkBusy: false });
   });
 
   it("has a Buy me a coffee button that opens the support page", () => {
@@ -51,5 +52,19 @@ describe("TopBar", () => {
     expect(api.setMasterVolume).not.toHaveBeenCalled();
     fireEvent.pointerUp(slider);
     expect(api.setMasterVolume).toHaveBeenCalledWith(0.45);
+  });
+
+  it("adds a sound from a pasted link", () => {
+    render(<TopBar />);
+    fireEvent.click(screen.getByText("From link"));
+    fireEvent.change(screen.getByLabelText("Paste a link"), { target: { value: " https://youtu.be/x " } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("Add"));
+    expect(addFromLink).toHaveBeenCalledWith("https://youtu.be/x");
+  });
+
+  it("shows Downloading while a link download runs", () => {
+    useStore.setState({ linkBusy: true });
+    render(<TopBar />);
+    expect(screen.getByText("Downloading…")).toBeDisabled();
   });
 });

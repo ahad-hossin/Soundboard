@@ -1,9 +1,9 @@
-import { addPaths, moveTo } from "./actions";
+import { addFromLink, addPaths, moveTo } from "./actions";
 import { api } from "./api";
 import { useStore } from "./store";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("./api", () => ({ api: { addSounds: vi.fn(), moveSounds: vi.fn() } }));
+vi.mock("./api", () => ({ api: { addSounds: vi.fn(), moveSounds: vi.fn(), addSoundFromUrl: vi.fn() } }));
 
 const addSounds = api.addSounds as ReturnType<typeof vi.fn>;
 const moveSounds = api.moveSounds as ReturnType<typeof vi.fn>;
@@ -61,5 +61,30 @@ describe("moveTo", () => {
     await moveTo(["a", "b"], "gone");
     expect(useStore.getState().sel.size).toBe(2);
     expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "That folder no longer exists" });
+  });
+});
+
+describe("addFromLink", () => {
+  const addSoundFromUrl = api.addSoundFromUrl as ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useStore.setState({ toasts: [], pendingTrimId: null, openFolder: "f1", linkBusy: false });
+  });
+
+  it("downloads into the open folder, opens the trim editor and clears busy", async () => {
+    addSoundFromUrl.mockResolvedValue("s9");
+    const p = addFromLink("https://youtu.be/x");
+    expect(useStore.getState().linkBusy).toBe(true);
+    await p;
+    expect(addSoundFromUrl).toHaveBeenCalledWith("https://youtu.be/x", "f1");
+    expect(useStore.getState().pendingTrimId).toBe("s9");
+    expect(useStore.getState().linkBusy).toBe(false);
+  });
+
+  it("toasts the error and clears busy", async () => {
+    addSoundFromUrl.mockRejectedValue("Video unavailable");
+    await addFromLink("https://youtu.be/x");
+    expect(useStore.getState().toasts[0]).toMatchObject({ level: "error", message: "Video unavailable" });
+    expect(useStore.getState().linkBusy).toBe(false);
   });
 });

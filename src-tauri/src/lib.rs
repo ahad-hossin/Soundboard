@@ -131,6 +131,7 @@ pub fn run() {
             commands::stop_all,
             commands::set_master_volume,
             commands::set_sound_volume,
+            commands::add_sound_from_url,
             commands::add_sounds,
             commands::get_waveform,
             commands::set_trim,

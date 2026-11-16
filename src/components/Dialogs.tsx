@@ -36,9 +36,9 @@ export function ConfirmDialog({ title, confirmLabel, danger, onConfirm, onCancel
   );
 }
 
-interface RenameProps { title: string; initial: string; onSubmit: (value: string) => void; onCancel: () => void }
+interface RenameProps { title: string; initial: string; onSubmit: (value: string) => void; onCancel: () => void; submitLabel?: string }
 
-export function RenameDialog({ title, initial, onSubmit, onCancel }: RenameProps) {
+export function RenameDialog({ title, initial, onSubmit, onCancel, submitLabel = "Save" }: RenameProps) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { ref.current?.focus(); ref.current?.select(); }, []);
@@ -50,7 +50,7 @@ export function RenameDialog({ title, initial, onSubmit, onCancel }: RenameProps
         <input id="rename" ref={ref} className="field mb-4" value={value} onChange={(e) => setValue(e.target.value)} />
         <div className="flex justify-end gap-2">
           <button type="button" className="btn" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn border-text bg-text text-bg hover:bg-text" disabled={!value.trim()}>Save</button>
+          <button type="submit" className="btn border-text bg-text text-bg hover:bg-text" disabled={!value.trim()}>{submitLabel}</button>
         </div>
       </form>
     </Backdrop>

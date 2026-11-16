@@ -1,9 +1,11 @@
-import { pickAndAddSounds } from "../lib/actions";
+import { useState } from "react";
+import { addFromLink, pickAndAddSounds } from "../lib/actions";
 import { displayAccel } from "../lib/accel";
 import { api } from "../lib/api";
 import { cx } from "../lib/cx";
 import { useStore } from "../lib/store";
 import { useSliderDraft } from "../lib/useSliderDraft";
+import { RenameDialog } from "./Dialogs";
 
 function SpeakerGlyph() {
   return (
@@ -19,6 +21,8 @@ export function TopBar() {
   const run = useStore((s) => s.run);
   const panel = useStore((s) => s.panel);
   const togglePanel = useStore((s) => s.togglePanel);
+  const linkBusy = useStore((s) => s.linkBusy);
+  const [pasting, setPasting] = useState(false);
   const playing = state.playing.length > 0;
   const master = useSliderDraft(state.master_volume, (v) => void run(api.setMasterVolume(v)));
 
@@ -59,6 +63,10 @@ export function TopBar() {
         Stop All
       </button>
 
+      <button type="button" onClick={() => setPasting(true)} disabled={linkBusy} className="btn" title="Add a sound from a YouTube, Instagram, Facebook or other link">
+        {linkBusy ? "Downloading…" : "From link"}
+      </button>
+
       <button type="button" onClick={() => void pickAndAddSounds()} className="btn border-text bg-text text-bg hover:bg-text">
         Add
       </button>
@@ -71,6 +79,15 @@ export function TopBar() {
       <button type="button" onClick={() => togglePanel("settings")} aria-pressed={panel === "settings"} className="btn">
         Settings
       </button>
+      {pasting && (
+        <RenameDialog
+          title="Paste a link"
+          initial=""
+          submitLabel="Add"
+          onCancel={() => setPasting(false)}
+          onSubmit={(url) => { setPasting(false); void addFromLink(url); }}
+        />
+      )}
     </header>
   );
 }

@@ -14,6 +14,8 @@ interface Store {
   /** A sound just imported on its own; the grid opens the trim editor for it once it is in state. */
   pendingTrimId: string | null;
   setPendingTrim: (id: string | null) => void;
+  /** A link download is running; the From link button shows Downloading…. */
+  linkBusy: boolean;
   /** Folder shown in the grid; null is the top level. Not saved: the app starts on the top level. */
   openFolder: string | null;
   /** Selected sound ids (Ctrl+click), always within the open view. */
@@ -41,6 +43,7 @@ export const useStore = create<Store>((set, get) => ({
   optimistic: new Set(),
   pendingTrimId: null,
   setPendingTrim: (pendingTrimId) => set({ pendingTrimId }),
+  linkBusy: false,
   openFolder: null,
   sel: NO_SELECTION,
   setOpenFolder: (openFolder) => set({ openFolder, sel: NO_SELECTION }),

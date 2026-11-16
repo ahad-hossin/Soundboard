@@ -5,6 +5,19 @@ import { useStore } from "./store";
 const AUDIO = ["mp3", "wav", "ogg", "flac"];
 const IMAGES = ["png", "jpg", "jpeg", "webp", "gif"];
 
+/** Downloads a link's audio as a new sound in the open folder and opens the trim editor for it. */
+export async function addFromLink(url: string) {
+  const { toast, setPendingTrim, openFolder } = useStore.getState();
+  useStore.setState({ linkBusy: true });
+  try {
+    setPendingTrim(await api.addSoundFromUrl(url, openFolder));
+  } catch (e) {
+    toast("error", String(e));
+  } finally {
+    useStore.setState({ linkBusy: false });
+  }
+}
+
 /** Imports files; each rejected file becomes a warning toast. A single new sound opens the trim editor. */
 export async function addPaths(paths: string[]) {
   const { toast, setPendingTrim, openFolder } = useStore.getState();

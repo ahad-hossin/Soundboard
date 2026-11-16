@@ -1,12 +1,14 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use soundboard_core::audio::decode::decode_file;
 use soundboard_core::audio::{waveform, DecodedBuffer, DeviceTarget};
-use soundboard_core::config::{self, Devices, Trim, MIN_TRIM_SECS};
+use soundboard_core::config::{self, Devices, Sound, Trim, MIN_TRIM_SECS};
 use soundboard_core::hotkeys::{self, Owner};
 use soundboard_core::library::Library;
+use soundboard_core::link;
 use soundboard_core::palette::is_palette_color;
 use soundboard_core::remote::auth;
 use tauri_plugin_autostart::ManagerExt;
@@ -104,16 +106,62 @@ pub struct AddOutcome {
     pub added_ids: Vec<String>,
 }
 
+/// Short lock just to learn where the library lives; the heavy import runs unlocked.
+/// The current colors come along so new sounds get the least-used ones.
+fn library_root_and_colors(ctx: &Ctx) -> (PathBuf, Vec<String>) {
+    let a = lock(&ctx.shared);
+    let colors: Vec<String> = a.config.sounds.iter().filter_map(|s| s.color.clone()).collect();
+    (a.library.root().to_path_buf(), colors)
+}
+
+/// Adds freshly imported sounds to the config in `folder` (top level when that folder is gone),
+/// saves, and starts decoding them in the background.
+fn insert_imported(ctx: &Ctx, imported: Vec<Sound>, folder: Option<String>) {
+    let ids: Vec<String> = imported.iter().map(|s| s.id.clone()).collect();
+    {
+        let mut a = lock(&ctx.shared);
+        let folder = folder.filter(|f| a.config.folder(f).is_some());
+        a.config.sounds.extend(imported.into_iter().map(|mut s| {
+            s.folder = folder.clone();
+            s
+        }));
+        a.mark_dirty();
+        a.refresh_files();
+    }
+    spawn_warm(ctx.shared.clone(), Some(ids));
+}
+
+/// Downloads the audio of `url` with yt-dlp into a temp folder, imports it as one sound and
+/// returns its id. The temp folder is removed whether or not it worked.
+#[tauri::command]
+pub async fn add_sound_from_url(url: String, folder: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if !link::is_link(&url) {
+        return Err("That is not a link".to_string());
+    }
+    let (root, used_colors) = library_root_and_colors(&ctx);
+    let sound = tauri::async_runtime::spawn_blocking(move || -> Result<Sound, String> {
+        let tmp = std::env::temp_dir().join(format!("soundboard-link-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let result = link::download_audio(&url, &tmp).and_then(|mp3| {
+            let library = Library::open(root).map_err(|e| format!("Could not open the sound library: {e}"))?;
+            library.import_sound(&mp3, &used_colors.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|e| e.to_string())
+        });
+        let _ = fs::remove_dir_all(&tmp);
+        result
+    })
+    .await
+    .map_err(|e| format!("Downloading failed: {e}"))??;
+    let id = sound.id.clone();
+    insert_imported(&ctx, vec![sound], folder);
+    emit_state(&app, &ctx);
+    Ok(id)
+}
+
 /// Imports each path; reports the rejected files and the new sound ids.
 #[tauri::command]
 pub async fn add_sounds(paths: Vec<String>, folder: Option<String>, app: AppHandle, ctx: State<'_, Ctx>) -> Result<AddOutcome, String> {
-    // Short lock just to learn where the library lives; the heavy import runs unlocked.
-    // The current colors come along so new sounds get the least-used ones.
-    let (root, mut used_colors) = {
-        let a = lock(&ctx.shared);
-        let colors: Vec<String> = a.config.sounds.iter().filter_map(|s| s.color.clone()).collect();
-        (a.library.root().to_path_buf(), colors)
-    };
+    let (root, mut used_colors) = library_root_and_colors(&ctx);
     let (imported, rejected) = tauri::async_runtime::spawn_blocking(move || {
         let mut imported = Vec::new();
         let mut rejected = Vec::new();
@@ -137,18 +185,7 @@ pub async fn add_sounds(paths: Vec<String>, folder: Option<String>, app: AppHand
     .map_err(|e| format!("Importing sounds failed: {e}"))?;
     let added_ids: Vec<String> = imported.iter().map(|s| s.id.clone()).collect();
     if !imported.is_empty() {
-        {
-            let mut a = lock(&ctx.shared);
-            // A folder deleted while the import ran: the sounds land on the top level instead.
-            let folder = folder.filter(|f| a.config.folder(f).is_some());
-            a.config.sounds.extend(imported.into_iter().map(|mut s| {
-                s.folder = folder.clone();
-                s
-            }));
-            a.mark_dirty();
-            a.refresh_files();
-        }
-        spawn_warm(ctx.shared.clone(), Some(added_ids.clone()));
+        insert_imported(&ctx, imported, folder);
     }
     emit_state(&app, &ctx);
     Ok(AddOutcome { rejected, added_ids })
